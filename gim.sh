@@ -18,6 +18,7 @@ if [ "$initial_run" -o ]; then
   exit 0
 fi
 
+# Find editors starting with "Godot"
 installed_editors=`find . -name '$editor_file_name*'`
 
 # Check installed editors array is empty
@@ -27,22 +28,35 @@ if [ "${#installed_editors[@]}" -eq 0]; then
   exit 1
 fi
 
-# Print installed versions with index for user to select
-echo -e "Select a version to launch.\nInstalled editor versions:"
+# Print installed editors with index for user to select
+echo -e "Select an editor to launch.\nInstalled editors:"
 
 for ((i = 0 ; i <= ${#installed_editors[@]} ; i++)); do
   echo "[$i]\t${installed_editors[$i]}"
 done
 
-# Check if default version is present
-# If so, start it and exit
-# Otherwise, inform and ask to either download it or select new default
+# Get index input from user
+read index_input
+
+# Parse input to integer number using regex
+input_number='$index_input =~ ^[0-9]+$'
+
+# Exit if input is not an integer number
+if ! [[ $yournumber =~ $re ]] ; then
+   echo "ERROR: Not a number"
+   exit 1
+fi
+
+# Launch selected editor
+# TODO: Implement
 
 exit 0
 
-
 # ///// For in the future \\\\\
 
+# Check if default version is present
+# If so, start it and exit
+# Otherwise, inform and ask to either download it or select new default
 
 # Bootstrap the environment.
 # shellcheck disable=SC1091
