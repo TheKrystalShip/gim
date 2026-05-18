@@ -1,2 +1,5 @@
 # GIM specific
 editors/
+
+# Visual Studio Code
+.vscode/
