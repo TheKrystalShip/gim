@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# ARG_HELP([GIM],
-#     [Godot Installer Manager.\nManage multiple Godot editor versions.])
+# ARG_HELP([GIM - Godot Install Manager\nManage multiple Godot editor versions.\n])
 # ARG_VERSION([echo "gim 0.1.0"])
-# ARG_OPTIONAL_SINGLE([list], [l], [Lists all local Godot editor versions])
-# ARG_OPTIONAL_SINGLE([run-default], [r], [Launch the Godot editor set with --set-default. Fails if no editor is set.])
-# ARG_OPTIONAL_SINGLE([set-default], , [Sets the default Godot Editor version using the version string from Godot --version])
-# ARGBASH_GO
+# ARG_OPTIONAL_ACTION([list], [l], [Lists all local Godot editor versions], [list_installed_editors])
+# ARG_OPTIONAL_ACTION([run-default], [r], [Launch the Godot editor set with --set-default. Fails if no editor is set.], [run_default_editor])
+# ARG_OPTIONAL_SINGLE([set-default], , [Sets the default Godot Editor version using the version from Godot --version])
+# ARG_OPTIONAL_ACTION([show-default], , [Shows the currently set default Godot Editor version, if any], [get_default_editor])
+# ARGBASH_PREPARE
 
 # [ <-- needed because of Argbash
 
@@ -29,7 +29,12 @@ find_installed_editors() {
     return
   fi
   while IFS= read -r file; do
-    installed_editors+=("$file")
+    if [ -x "$file" ]; then
+      version=$("$file" --version 2>/dev/null)
+      if [ -n "$version" ]; then
+        installed_editors+=("$version")
+      fi
+    fi
   done < <(find "$editors_dir" -maxdepth 1 -type f -iname "${editor_file_name_start}*" 2>/dev/null)
 }
 
@@ -68,9 +73,12 @@ find_editor_by_version() {
   local editor_path=""
 
   while IFS= read -r file; do
-    if echo "$file" | grep -qF "$search_version"; then
-      editor_path="$file"
-      break
+    if [ -x "$file" ]; then
+      version=$("$file" --version 2>/dev/null)
+      if [ -n "$version" ] && echo "$version" | grep -qF "$search_version"; then
+        editor_path="$file"
+        break
+      fi
     fi
   done < <(find "$editors_dir" -maxdepth 1 -type f -iname "${editor_file_name_start}*" 2>/dev/null)
 
@@ -79,13 +87,33 @@ find_editor_by_version() {
     return 1
   fi
 
-  if [ ! -x "$editor_path" ]; then
-    echo "Error: Editor at '$editor_path' is not executable." >&2
-    return 1
-  fi
-
   echo "$editor_path"
 }
+
+list_installed_editors() {
+  find_installed_editors
+
+  if [ ${#installed_editors[@]} -eq 0 ]; then
+    echo "No Godot editors found in $editors_dir"
+    echo "Place Godot editors inside this folder to start using GIM."
+    exit 0
+  fi
+  # echo "Installed editors:"
+  for editor in "${installed_editors[@]}"; do
+    echo "  $editor"
+  done
+}
+
+run_default_editor() {
+  local default_version
+  default_version=$(get_default_editor) || return 1
+  local editor_path
+  editor_path=$(find_editor_by_version "$default_version") || return 1
+  exec "$editor_path"
+}
+
+# --- Parse Arguments (after helper functions are defined) ---
+parse_commandline "$@"
 
 # --- Argument Handling ---
 
