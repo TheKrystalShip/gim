@@ -9,11 +9,14 @@ ___
 -l --list
 : Lists all local Godot editor versions
 
--r --run-default
-: Launch the Godot editor set with `--set-default`. Fails if no editor is set.
+-i --install `<version>`
+: Download a specific Godot Editor version (e.g., "4.7", "4.7.stable", "4.7.stable.official.5b4e0cb0f" or "5b4e0cb0f")
 
---set-default `<version>`
-: Sets the default Godot Editor version using the version string output from `Godot --version` (e.g., "4.7.stable.official.5b4e0cb0f")
+-r --run `<version>` (default: latest)
+: Run a specific installed Godot Editor version. If called without a version, run the latest. Fails if the specific version is not present, or no versions are present.
+
+--delete `<version>`
+: Delete a specific installed Godot Editor. Fails if no match is found.
 
 -v --version
 : Displays the current version of GIM

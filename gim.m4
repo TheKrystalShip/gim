@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 
 # ARG_HELP([GIM - Godot Install Manager\nManage multiple Godot editor versions.\n])
-# ARG_VERSION([echo "gim 0.1.0"])
-# ARG_OPTIONAL_ACTION([list], [l], [Lists all local Godot editor versions], [list_installed_editors])
-# ARG_OPTIONAL_ACTION([run-default], [r], [Launch the Godot editor set with --set-default. Fails if no editor is set.], [run_default_editor])
-# ARG_OPTIONAL_SINGLE([set-default], , [Sets the default Godot Editor version using the version from Godot --version])
-# ARG_OPTIONAL_ACTION([show-default], , [Shows the currently set default Godot Editor version, if any], [get_default_editor])
+# ARG_VERSION([echo "$NAME_SHORT $VERSION"])
+# ARG_OPTIONAL_ACTION([list], l, [Lists all local Godot editor versions], [list_installed_editors])
+# ARG_OPTIONAL_SINGLE([run], r, [Launch a specific Godot editor if a version is passed, otherwise runs the latest present. Fails if no editors are present], [run_default_editor])
+# ARG_OPTIONAL_SINGLE([install], i, [Install a specific Godot editor version])
 # ARGBASH_PREPARE
 
 # [ <-- needed because of Argbash
+
+# --- Constants ---
+NAME_SHORT="GIM"
+NAME_LONG="Godot Installation Manager"
+VERSION="0.1.0"
 
 # --- XDG Base Directory Setup ---
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -38,36 +42,6 @@ find_installed_editors() {
   done < <(find "$editors_dir" -maxdepth 1 -type f -iname "${editor_file_name_start}*" 2>/dev/null)
 }
 
-save_default_editor() {
-  local version_string="$1"
-
-  if [ -z "$version_string" ]; then
-    echo "Error: No version string provided." >&2
-    exit 1
-  fi
-
-  mkdir -p "$APP_CONFIG_DIR" || { echo "Error: Could not create config directory $APP_CONFIG_DIR" >&2; exit 1; }
-  echo "$version_string" > "$DEFAULT_EDITOR_FILE" || { echo "Error: Could not write to $DEFAULT_EDITOR_FILE" >&2; exit 1; }
-  echo "Default editor set to: $version_string"
-}
-
-get_default_editor() {
-  if [ ! -f "$DEFAULT_EDITOR_FILE" ]; then
-    echo "Error: No default editor set. Use --set-default <version> to set one." >&2
-    exit 1
-  fi
-
-  local version_string
-  version_string=$(<"$DEFAULT_EDITOR_FILE")
-
-  if [ -z "$version_string" ]; then
-    echo "Error: Default editor file is empty. Use --set-default <version> to set one." >&2
-    exit 1
-  fi
-
-  echo "$version_string"
-}
-
 find_editor_by_version() {
   local search_version="$1"
   local editor_path=""
@@ -95,21 +69,12 @@ list_installed_editors() {
 
   if [ ${#installed_editors[@]} -eq 0 ]; then
     echo "No Godot editors found in $editors_dir"
-    echo "Place Godot editors inside this folder to start using GIM."
+    echo "Place Godot editors inside this folder to start using $NAME_SHORT."
     exit 0
   fi
-  # echo "Installed editors:"
   for editor in "${installed_editors[@]}"; do
     echo "  $editor"
   done
-}
-
-run_default_editor() {
-  local default_version
-  default_version=$(get_default_editor) || return 1
-  local editor_path
-  editor_path=$(find_editor_by_version "$default_version") || return 1
-  exec "$editor_path"
 }
 
 # --- Parse Arguments (after helper functions are defined) ---
@@ -117,19 +82,11 @@ parse_commandline "$@"
 
 # --- Argument Handling ---
 
-if [ -n "$_arg_set_default" ]; then
-  save_default_editor "$_arg_set_default"
-
-elif [ "$_arg_run_default" = on ]; then
-  default_version=$(get_default_editor) || exit 1
-  editor_path=$(find_editor_by_version "$default_version") || exit 1
-  exec "$editor_path"
-
-elif [ "$_arg_list" = on ]; then
+if [ "$_arg_list" = on ]; then
   find_installed_editors
   if [ ${#installed_editors[@]} -eq 0 ]; then
     echo "No Godot editors found in $editors_dir"
-    echo "Place Godot editors inside this folder to start using GIM."
+    echo "Place Godot editors inside this folder to start using $NAME_SHORT."
     exit 0
   fi
   echo "Installed editors:"
@@ -138,7 +95,7 @@ elif [ "$_arg_list" = on ]; then
   done
 
 else
-  echo "GIM - Godot Installer Manager"
+  echo "$NAME_SHORT - $NAME_LONG"
   echo "Use -h or --help for usage information."
 fi
 
