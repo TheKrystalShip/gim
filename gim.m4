@@ -6,6 +6,8 @@
 # ARG_OPTIONAL_SINGLE([run], r, [Run a specific installed Godot Editor version. If called without a version, run the latest. Fails if the specific version is not present, or no versions are present])
 # ARG_OPTIONAL_SINGLE([install], i, [Install a specific Godot editor version])
 # ARG_OPTIONAL_SINGLE([delete], d, [Delete a specific installed Godot Editor. Fails if no match is found])
+# ARG_OPTIONAL_BOOLEAN([mono], m, [Download mono build instead of standard build])
+# ARG_OPTIONAL_ACTION([online], o, [List latest online versions])
 # ARGBASH_PREPARE
 
 # [ <-- needed because of Argbash
@@ -14,6 +16,7 @@
 NAME_SHORT="GIM"
 NAME_LONG="Godot Installation Manager"
 VERSION="0.1.0"
+MAX_SIMILAR_VERSIONS=5
 
 # --- XDG Base Directory Setup ---
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -74,8 +77,143 @@ list_installed_editors() {
     exit 0
   fi
   for editor in "${installed_editors[@]}"; do
-    echo "  $editor"
+    echo "$editor"
   done
+}
+
+available_releases=()
+
+check_online_dependencies() {
+  if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+    echo "Error: Neither curl nor wget is installed." >&2
+    exit 1
+  fi
+  if ! command -v jq &> /dev/null; then
+    echo "Error: jq is not installed." >&2
+    exit 1
+  fi
+}
+
+fetch_releases() {
+  if [ ${#available_releases[@]} -gt 0 ]; then
+    return
+  fi
+
+  local api_url="https://api.github.com/repos/godotengine/godot-builds/releases?per_page=100"
+  local response
+  local http_code
+
+  if command -v curl &> /dev/null; then
+    http_code=$(curl -s -w "%{http_code}" -o /tmp/gim_releases.json "$api_url")
+  else
+    http_code=$(wget -q -O /tmp/gim_releases.json "$api_url" 2>&1 && echo "200" || echo "000")
+  fi
+
+  if [ "$http_code" = "403" ]; then
+    echo "Error: GitHub API rate limit exceeded." >&2
+    echo "Set a GITHUB_TOKEN environment variable to increase the limit." >&2
+    rm -f /tmp/gim_releases.json
+    exit 1
+  elif [ "$http_code" != "200" ]; then
+    echo "Error: Failed to fetch releases from GitHub (HTTP $http_code)." >&2
+    rm -f /tmp/gim_releases.json
+    exit 1
+  fi
+
+  while IFS= read -r line; do
+    available_releases+=("$line")
+  done < <(jq -r '.[] | "\(.tag_name)|\(.prerelease)"' /tmp/gim_releases.json 2>/dev/null)
+  rm -f /tmp/gim_releases.json
+}
+
+resolve_version() {
+  local search_version="$1"
+
+  for entry in "${available_releases[@]}"; do
+    local tag="${entry%%|*}"
+    if [ "$tag" = "$search_version" ]; then
+      echo "$tag"
+      return 0
+    fi
+  done
+
+  echo "No exact match found. Available versions:" >&2
+
+  declare -A latest_stable
+  local latest_experimental=""
+
+  for entry in "${available_releases[@]}"; do
+    local tag="${entry%%|*}"
+    local prerelease="${entry#*|}"
+    local major="${tag%%.*}"
+    local remainder="${tag#*.}"
+    local minor="${remainder%%.*}"
+
+    if [ "$prerelease" = "true" ]; then
+      if [ -z "$latest_experimental" ] || [[ "$tag" > "$latest_experimental" ]]; then
+        latest_experimental="$tag"
+      fi
+    else
+      local key="${major}.${minor}"
+      if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
+        latest_stable[$key]="$tag"
+      fi
+    fi
+  done
+
+  local count=0
+  for key in $(for k in "${!latest_stable[@]}"; do echo "$k"; done | sort -t. -k1,1n -k2,2n); do
+    if [ $count -ge $MAX_SIMILAR_VERSIONS ]; then
+      break
+    fi
+    echo "  ${latest_stable[$key]}"
+    ((count++))
+  done
+
+  if [ -n "$latest_experimental" ] && [ $count -lt $MAX_SIMILAR_VERSIONS ]; then
+    echo "  $latest_experimental"
+  fi
+
+  return 1
+}
+
+list_online() {
+  check_online_dependencies
+  fetch_releases
+
+  echo "Online versions:"
+
+  declare -A latest_stable
+  local latest_experimental=""
+  local count=0
+
+  for entry in "${available_releases[@]}"; do
+    local tag="${entry%%|*}"
+    local prerelease="${entry#*|}"
+    local major="${tag%%.*}"
+    local remainder="${tag#*.}"
+    local minor="${remainder%%.*}"
+
+    if [ "$prerelease" = "true" ]; then
+      if [ -z "$latest_experimental" ] || [[ "$tag" > "$latest_experimental" ]]; then
+        latest_experimental="$tag"
+      fi
+    else
+      local key="${major}.${minor}"
+      if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
+        latest_stable[$key]="$tag"
+      fi
+    fi
+  done
+
+  for key in $(for k in "${!latest_stable[@]}"; do echo "$k"; done | sort -t. -k1,1n -k2,2n); do
+    echo "  ${latest_stable[$key]}"
+    ((count++))
+  done
+
+  if [ -n "$latest_experimental" ]; then
+    echo "  $latest_experimental"
+  fi
 }
 
 run_editor() {
@@ -121,18 +259,27 @@ delete_editor() {
 
 install_editor() {
   local version="$_arg_install"
-  local zip_name="Godot_v${version}-stable_linux.x86_64.zip"
-  local download_url="https://github.com/godotengine/godot-builds/releases/download/${version}-stable/${zip_name}"
+  local mono="$_arg_mono"
 
-  if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
-    echo "Error: Neither curl nor wget is installed." >&2
-    exit 1
-  fi
+  check_online_dependencies
 
   if ! command -v unzip &> /dev/null; then
     echo "Error: unzip is not installed." >&2
     exit 1
   fi
+
+  fetch_releases
+
+  local tag
+  tag=$(resolve_version "$version") || exit 1
+
+  local asset_suffix=""
+  if [ "$mono" = "on" ]; then
+    asset_suffix="_mono"
+  fi
+
+  local zip_name="Godot_v${tag}${asset_suffix}_linux.x86_64.zip"
+  local download_url="https://github.com/godotengine/godot-builds/releases/download/${tag}/${zip_name}"
 
   local tmp_dir
   tmp_dir=$(mktemp -d)
@@ -152,7 +299,7 @@ install_editor() {
   chmod +x "$editors_dir"/Godot_v*
 
   rm -rf "$tmp_dir"
-  echo "Installed Godot $version to $editors_dir"
+  echo "Installed Godot $tag to $editors_dir"
 }
 
 # --- Parse Arguments (after helper functions are defined) ---
@@ -162,6 +309,8 @@ parse_commandline "$@"
 
 if [ "$_arg_list" = on ]; then
   list_installed_editors
+elif [ "$_arg_online" = on ]; then
+  list_online
 elif [ -n "$_arg_run" ]; then
   run_editor
 elif [ -n "$_arg_install" ]; then

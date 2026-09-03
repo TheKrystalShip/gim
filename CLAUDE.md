@@ -11,6 +11,12 @@ GIM (Godot Install Manager) is a bash script that manages and launches multiple 
 - `args.md` — CLI argument reference documentation
 - `old/` — Archived earlier versions (not active code)
 
+## Dependencies
+
+- `curl` or `wget` — for downloading Godot releases
+- `unzip` — for extracting downloaded archives
+- `jq` — for parsing GitHub API responses
+
 ## Build/Regenerate
 
 After editing `gim.m4`, regenerate `gim.sh`:
