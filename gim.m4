@@ -2,13 +2,13 @@
 
 # ARG_HELP([GIM - Godot Install Manager\nManage multiple Godot editor versions.\n])
 # ARG_VERSION([echo "$NAME_SHORT $VERSION"])
-# ARG_OPTIONAL_ACTION([list], l, [Lists all installed Godot editor versions.], [list_installed_editors])
-# ARG_OPTIONAL_SINGLE([run], r, [Run a specific installed Godot Editor version. If called without a version, run the latest installed. Fails if the specific version is not present or no versions are installed])
-# ARG_OPTIONAL_SINGLE([install], i, [Install a specific Godot editor version. Use --list --online to see available versions.])
-# ARG_OPTIONAL_SINGLE([delete], d, [Delete a specific installed Godot Editor. Fails if no match is found.])
-# ARG_OPTIONAL_BOOLEAN([mono], m, [List/install mono build instead of standard build.])
-# ARG_OPTIONAL_BOOLEAN([experimental], e, [List available experimental versions (only works with --online)])
-# ARG_OPTIONAL_BOOLEAN([online], o, [List latest online editor versions (only works with --list)])
+# ARG_OPTIONAL_BOOLEAN([list], l, [list installed Godot editor versions])
+# ARG_OPTIONAL_SINGLE([run], r, [run a specific installed Godot editor version; if omitted, run latest])
+# ARG_OPTIONAL_SINGLE([install], i, [install a specific Godot editor version; use --list --online to see available versions])
+# ARG_OPTIONAL_SINGLE([delete], d, [delete a specific installed Godot editor])
+# ARG_OPTIONAL_BOOLEAN([mono], m, [download mono build instead of standard build; only works with --install])
+# ARG_OPTIONAL_BOOLEAN([experimental], e, [include experimental versions in online listing; only works with --online])
+# ARG_OPTIONAL_BOOLEAN([online], o, [list latest online editor versions; only works with --list])
 # ARGBASH_PREPARE
 
 # [ <-- needed because of Argbash
@@ -116,7 +116,7 @@ list_installed_editors() {
         if [ $count -ge $MAX_ONLINE_VERSIONS ]; then
           break
         fi
-        echo "  ${latest_stable[$key]}"
+    echo "  ${latest_stable[$key]}" >&2
         ((count++))
       done
     fi
@@ -130,7 +130,7 @@ list_installed_editors() {
     echo "Place Godot editors inside this folder to start using $NAME_SHORT."
     exit 0
   fi
-  for editor in "${installed_editors[@]}"; do
+  for editor in $(printf '%s\n' "${installed_editors[@]}" | sort -Vr); do
     echo "$editor"
   done
 }
@@ -185,7 +185,7 @@ resolve_version() {
 
   for entry in "${available_releases[@]}"; do
     local tag="${entry%%|*}"
-    if [ "$tag" = "$search_version" ]; then
+    if [[ "$tag" == ${search_version}* ]]; then
       echo "$tag"
       return 0
     fi
@@ -220,12 +220,12 @@ resolve_version() {
     if [ $count -ge $MAX_SIMILAR_VERSIONS ]; then
       break
     fi
-    echo "  ${latest_stable[$key]}"
+    echo "  ${latest_stable[$key]}" >&2
     ((count++))
   done
 
   if [ -n "$latest_experimental" ] && [ $count -lt $MAX_SIMILAR_VERSIONS ]; then
-    echo "  $latest_experimental"
+    echo "  $latest_experimental" >&2
   fi
 
   return 1
@@ -308,6 +308,8 @@ install_editor() {
 
   echo "Extracting..."
   unzip -o -q "$tmp_dir/$zip_name" -d "$tmp_dir"
+
+  rm "$tmp_dir/$zip_name"
 
   mkdir -p "$editors_dir"
   mv "$tmp_dir"/Godot_v* "$editors_dir/"
