@@ -16,7 +16,10 @@ ___
 : Download mono build instead of standard build. Only affects --install.
 
 -o --online
-: List latest online versions (latest stable for each major and the latest experimental). Requires network access.
+: List latest online versions (latest stable for each major). Requires network access. Only effective when combined with -l (e.g., -ol).
+
+-e --experimental
+: Include experimental versions in online listing. Only effective when combined with -l and -o (e.g., -oel). Shows latest experimental releases instead of stable.
 
 -r --run `<version>` (default: latest)
 : Run a specific installed Godot Editor version. If called without a version, run the latest. Fails if the specific version is not present, or no versions are present.

@@ -2,12 +2,13 @@
 
 # ARG_HELP([GIM - Godot Install Manager\nManage multiple Godot editor versions.\n])
 # ARG_VERSION([echo "$NAME_SHORT $VERSION"])
-# ARG_OPTIONAL_ACTION([list], l, [Lists all local Godot editor versions], [list_installed_editors])
-# ARG_OPTIONAL_SINGLE([run], r, [Run a specific installed Godot Editor version. If called without a version, run the latest. Fails if the specific version is not present, or no versions are present])
-# ARG_OPTIONAL_SINGLE([install], i, [Install a specific Godot editor version])
-# ARG_OPTIONAL_SINGLE([delete], d, [Delete a specific installed Godot Editor. Fails if no match is found])
-# ARG_OPTIONAL_BOOLEAN([mono], m, [Download mono build instead of standard build])
-# ARG_OPTIONAL_ACTION([online], o, [List latest online versions])
+# ARG_OPTIONAL_ACTION([list], l, [Lists all installed Godot editor versions.], [list_installed_editors])
+# ARG_OPTIONAL_SINGLE([run], r, [Run a specific installed Godot Editor version. If called without a version, run the latest installed. Fails if the specific version is not present or no versions are installed])
+# ARG_OPTIONAL_SINGLE([install], i, [Install a specific Godot editor version. Use --list --online to see available versions.])
+# ARG_OPTIONAL_SINGLE([delete], d, [Delete a specific installed Godot Editor. Fails if no match is found.])
+# ARG_OPTIONAL_BOOLEAN([mono], m, [List/install mono build instead of standard build.])
+# ARG_OPTIONAL_BOOLEAN([experimental], e, [List available experimental versions (only works with --online)])
+# ARG_OPTIONAL_BOOLEAN([online], o, [List latest online editor versions (only works with --list)])
 # ARGBASH_PREPARE
 
 # [ <-- needed because of Argbash
@@ -17,6 +18,7 @@ NAME_SHORT="GIM"
 NAME_LONG="Godot Installation Manager"
 VERSION="0.1.0"
 MAX_SIMILAR_VERSIONS=5
+MAX_ONLINE_VERSIONS=5
 
 # --- XDG Base Directory Setup ---
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -69,6 +71,58 @@ find_editor_by_version() {
 }
 
 list_installed_editors() {
+  if [ "$_arg_online" = "on" ]; then
+    check_online_dependencies
+    fetch_releases
+
+    echo "Online versions:"
+
+    if [ "$_arg_experimental" = "on" ]; then
+      local experimental_tags=()
+      for entry in "${available_releases[@]}"; do
+        local tag="${entry%%|*}"
+        local prerelease="${entry#*|}"
+        if [ "$prerelease" = "true" ]; then
+          experimental_tags+=("$tag")
+        fi
+      done
+
+      local count=0
+      for tag in $(printf '%s\n' "${experimental_tags[@]}" | sort -Vr); do
+        if [ $count -ge $MAX_ONLINE_VERSIONS ]; then
+          break
+        fi
+        echo "  $tag"
+        ((count++))
+      done
+    else
+      declare -A latest_stable
+      for entry in "${available_releases[@]}"; do
+        local tag="${entry%%|*}"
+        local prerelease="${entry#*|}"
+        if [ "$prerelease" = "false" ]; then
+          local major="${tag%%.*}"
+          local remainder="${tag#*.}"
+          local minor="${remainder%%.*}"
+          local key="${major}.${minor}"
+          if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
+            latest_stable[$key]="$tag"
+          fi
+        fi
+      done
+
+      local count=0
+      for key in $(for k in "${!latest_stable[@]}"; do echo "$k"; done | sort -t. -k1,1rn -k2,2rn); do
+        if [ $count -ge $MAX_ONLINE_VERSIONS ]; then
+          break
+        fi
+        echo "  ${latest_stable[$key]}"
+        ((count++))
+      done
+    fi
+    return
+  fi
+
   find_installed_editors
 
   if [ ${#installed_editors[@]} -eq 0 ]; then
@@ -177,45 +231,6 @@ resolve_version() {
   return 1
 }
 
-list_online() {
-  check_online_dependencies
-  fetch_releases
-
-  echo "Online versions:"
-
-  declare -A latest_stable
-  local latest_experimental=""
-  local count=0
-
-  for entry in "${available_releases[@]}"; do
-    local tag="${entry%%|*}"
-    local prerelease="${entry#*|}"
-    local major="${tag%%.*}"
-    local remainder="${tag#*.}"
-    local minor="${remainder%%.*}"
-
-    if [ "$prerelease" = "true" ]; then
-      if [ -z "$latest_experimental" ] || [[ "$tag" > "$latest_experimental" ]]; then
-        latest_experimental="$tag"
-      fi
-    else
-      local key="${major}.${minor}"
-      if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
-        latest_stable[$key]="$tag"
-      fi
-    fi
-  done
-
-  for key in $(for k in "${!latest_stable[@]}"; do echo "$k"; done | sort -t. -k1,1n -k2,2n); do
-    echo "  ${latest_stable[$key]}"
-    ((count++))
-  done
-
-  if [ -n "$latest_experimental" ]; then
-    echo "  $latest_experimental"
-  fi
-}
-
 run_editor() {
   local search_version="$_arg_run"
   local editor_path
@@ -309,8 +324,6 @@ parse_commandline "$@"
 
 if [ "$_arg_list" = on ]; then
   list_installed_editors
-elif [ "$_arg_online" = on ]; then
-  list_online
 elif [ -n "$_arg_run" ]; then
   run_editor
 elif [ -n "$_arg_install" ]; then
