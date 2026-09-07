@@ -190,16 +190,23 @@ find_editor_by_version() {
 
 is_version_installed() {
   local search_version="$1"
+  local mono="$2"
   # Extract version number before stability suffix (e.g., "4.7.2-stable" → "4.7.2")
   local version_num="${search_version%%-*}"
+
+  # Build search pattern based on mono flag
+  local pattern="${editor_file_name_start}_v${version_num}"
+  if [ "$mono" = "on" ]; then
+    pattern="${pattern}*_mono*"
+  else
+    pattern="${pattern}*_linux*"
+  fi
+
   while IFS= read -r file; do
-    if [ -x "$file" ]; then
-      version=$("$file" --version 2>/dev/null)
-      if [ -n "$version" ] && echo "$version" | grep -qF "$version_num"; then
-        return 0
-      fi
+    if [ -n "$file" ]; then
+      return 0
     fi
-  done < <(find "$editors_dir" -maxdepth 1 -type f -iname "${editor_file_name_start}*" 2>/dev/null)
+  done < <(find "$editors_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
   return 1
 }
 
@@ -422,7 +429,7 @@ install_editor() {
   tag=$(resolve_version "$version") || exit 1
 
   # Check if version is already installed
-  if is_version_installed "$tag"; then
+  if is_version_installed "$tag" "$mono"; then
     echo "Godot $tag is already installed."
     exit 0
   fi
@@ -432,7 +439,7 @@ install_editor() {
     asset_suffix="_mono"
   fi
 
-  local zip_name="Godot_v${tag}${asset_suffix}_linux.x86_64.zip"
+  local zip_name="Godot_v${tag}${asset_suffix}_linux_x86_64.zip"
   local download_url="https://github.com/godotengine/godot-builds/releases/download/${tag}/${zip_name}"
 
   local tmp_dir
@@ -453,6 +460,8 @@ install_editor() {
   mkdir -p "$editors_dir"
   mv "$tmp_dir"/Godot_v* "$editors_dir/"
   chmod +x "$editors_dir"/Godot_v*
+
+  tag="${tag}-mono"
 
   rm -rf "$tmp_dir"
   echo "Installed Godot $tag to $editors_dir"
