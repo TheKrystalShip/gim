@@ -9,8 +9,7 @@ and allows you to launch versions from a single place.
 
 ## Project
 
-GIM uses [Argbash](https://github.com/matejak/argbash) for CLI argument support.
-Install it for your distro or build it locally to start using it with GIM.
+GIM is a standalone bash script. No external build tools are required.
 
 ## Platform support
 
