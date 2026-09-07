@@ -1,91 +1,164 @@
-# Plan: Improve help output to match CLI conventions
+# Plan: Move actions from flags to subcommands
 
 ## Motivation
 
-GIM's current help output doesn't follow common CLI conventions used by popular tools like git, curl, jq, and ls. This makes the help less readable and familiar to users.
+Actions (`-l`, `-r`, `-i`, `-d`) as flags create ambiguity and don't follow CLI conventions. Most tools (git, npm, docker) use subcommands for clear separation between commands and flags.
 
-## Current help output
+## Current vs Proposed
 
-```
-GIM - Godot Install Manager
-Manage multiple Godot editor versions.
-Usage: /home/devcas/repos/gim/gim.sh [-h|--help] [-v|--version] [-l|--list] ...
-	-h, --help: Prints help
-	-v, --version: Prints version
-	-l, --list: list installed Godot editor versions
-	-r, --run [VERSION]: run a specific installed Godot editor version; if omitted, run latest
-	-i, --install VERSION: install a specific Godot editor version; use --list --online to see available versions
-	-d, --delete VERSION: delete a specific installed Godot editor
-	-m, --mono: download mono build instead of standard build; only works with --install
-	-e, --experimental: include experimental versions in online listing; only works with --online
-	-o, --online: list latest online editor versions; only works with --list
-```
+| Current (flags) | Proposed (subcommands) |
+|-----------------|------------------------|
+| `gim -l` | `gim list` |
+| `gim -r` | `gim run` |
+| `gim -r 4.7` | `gim run 4.7` |
+| `gim -i 4.7` | `gim install 4.7` |
+| `gim -d 4.7` | `gim delete 4.7` |
+| `gim -i 4.7 -m` | `gim install 4.7 -m` |
+| `gim -l -o` | `gim list -o` |
+| `gim -l -o -e` | `gim list -oe` |
 
-## Issues
+## Option classification
 
-| Issue | Current | Convention |
-|-------|---------|------------|
-| Usage line | Full script path | Command name only |
-| Option separator | `:` after flags | Spaces/tabs |
-| Alignment | Tab, no column alignment | Consistent column |
-| Grouping | All options flat | Grouped by category |
-| Capitalization | Mixed ("Prints" vs "list") | Consistent lowercase |
-| Required args | `UPPERCASE` | `<angle brackets>` |
-| Examples | None | Common usage examples |
+| Type | Items | Behavior |
+|------|-------|----------|
+| **Subcommands** | `list`, `run`, `install`, `delete` | Primary operations; first argument |
+| **Modifiers** | `-m`, `-e`, `-o` | Boolean flags; combinable (`-oe`, `-oem`) |
+| **Special** | `-h`, `-v` | Standalone flags |
 
-## Proposed new format
+## New help output
 
 ```
 GIM - Godot Install Manager
 Manage multiple Godot editor versions.
 
-Usage: gim [OPTIONS]
+Usage: gim <command> [OPTIONS]
 
-Options:
-  -h, --help                        Show this help message
-  -v, --version                     Show version
-  -l, --list                        List installed Godot editor versions
-  -r, --run [VERSION]               Run a Godot editor version (default: latest)
-  -i, --install <VERSION>           Install a Godot editor version
-  -d, --delete <VERSION>            Delete a Godot editor version
+Commands:
+  list                          List installed Godot editor versions
+  run [VERSION]                 Run a Godot editor version (default: latest)
+  install <VERSION>             Install a Godot editor version
+  delete <VERSION>              Delete a Godot editor version
+
+Global Options:
+  -h, --help                    Show this help message
+  -v, --version                 Show version
 
 Modifiers:
-  -m, --mono                        Download mono build (only with --install)
-  -e, --experimental                Include experimental versions (only with --list --online)
-  -o, --online                      List online versions (only with --list)
+  -m, --mono                    Download mono build (only with install)
+  -e, --experimental            Include experimental versions (only with list)
+  -o, --online                  List online versions (only with list)
 
 Examples:
-  gim -l                            List installed editors
-  gim -r                            Run latest editor
-  gim -r 4.2                        Run specific version
-  gim -i 4.2                        Install stable 4.2
-  gim -i 4.2 -m                     Install mono build of 4.2
-  gim -l -o                         List online versions
-  gim -l -o -e                      List online experimental versions
+  gim list                      List installed editors
+  gim list -o                   List online versions
+  gim list -oe                  List online experimental versions
+  gim run                       Run latest editor
+  gim run 4.2                   Run specific version
+  gim install 4.2               Install stable 4.2
+  gim install 4.2 -m            Install mono build of 4.2
+  gim delete 4.2                Delete a specific editor
 ```
 
-## Changes
+## Implementation
 
-### 1. Rewrite `print_help()` in `gim.sh`
+### 1. Subcommand dispatch (first argument)
 
-Replace the current implementation with:
+```bash
+case "$1" in
+  list|run|install|delete)
+    _action="$1"
+    shift
+    ;;
+  -h|--help)
+    print_help
+    exit 0
+    ;;
+  -v|--version)
+    echo "$NAME_SHORT $VERSION"
+    exit 0
+    ;;
+  "")
+    echo "Error: No command specified" >&2
+    print_help >&2
+    exit 1
+    ;;
+  *)
+    echo "Error: Unknown command '$1'" >&2
+    print_help >&2
+    exit 1
+    ;;
+esac
+```
 
-- **Usage line**: Use `gim` instead of `$0`
-- **Option alignment**: Pad flags to 36 characters, then description
-- **Grouping**: Split into "Options" (core actions) and "Modifiers" (behavior flags)
-- **Capitalization**: Start all descriptions with lowercase
-- **Argument notation**: Use `<VERSION>` for required, `[VERSION]` for optional
-- **Separator**: Replace `:` with spaces
-- **Examples section**: Add 7 common usage examples
+### 2. Parse modifiers and positional args (remaining args)
+
+```bash
+while test $# -gt 0; do
+  case "$1" in
+    -[meo][meo]*)
+      # Decompose combined modifiers (e.g., -oe → -o -e)
+      local opts="${1#-}"
+      shift
+      for (( i=0; i<${#opts}; i++ )); do
+        set -- "-${opts:$i:1}" "$@"
+      done
+      continue
+      ;;
+    -m|--mono) _arg_mono="on" ;;
+    -e|--experimental) _arg_experimental="on" ;;
+    -o|--online) _arg_online="on" ;;
+    -[meo])
+      case "$1" in
+        -m) _arg_mono="on" ;;
+        -e) _arg_experimental="on" ;;
+        -o) _arg_online="on" ;;
+      esac
+      ;;
+    -*) error ;;
+    *)
+      # Positional argument (version for run/install/delete)
+      if [ "$_action" = "run" ] && [ -z "$_arg_run" ]; then
+        _arg_run="$1"
+      elif [ "$_action" = "install" ] && [ -z "$_arg_install" ]; then
+        _arg_install="$1"
+      elif [ "$_action" = "delete" ] && [ -z "$_arg_delete" ]; then
+        _arg_delete="$1"
+      else
+        error
+      fi
+      ;;
+  esac
+  shift
+done
+```
+
+### 3. Dispatch to action function
+
+```bash
+case "$_action" in
+  list) list_installed_editors ;;
+  run) run_editor ;;
+  install) install_editor ;;
+  delete) delete_editor ;;
+esac
+```
 
 ## Files affected
 
 | File | Action |
 |------|--------|
-| `gim.sh` | Rewrite `print_help()` function |
+| `gim.sh` | Rewrite `parse_args()`, update `print_help()`, update dispatch |
 
 ## Verification
 
-- Run `gim.sh --help` to verify output format
-- Run `gim.sh -h` to verify short flag works
-- Run `bash -n gim.sh` to verify syntax
+- `gim list` → list installed editors
+- `gim list -o` → list online versions
+- `gim list -oe` → list online experimental
+- `gim run` → run latest editor
+- `gim run 4.7` → run specific version
+- `gim install 4.7` → install 4.7
+- `gim install 4.7 -m` → install mono build
+- `gim delete 4.7` → delete 4.7
+- `gim` → error: no command specified
+- `gim unknown` → error: unknown command
+- `bash -n gim.sh` → syntax check passes

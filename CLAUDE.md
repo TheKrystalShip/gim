@@ -28,27 +28,48 @@ GIM (Godot Install Manager) is a bash script that manages and launches multiple 
 
 ## Argument Parsing
 
+GIM uses subcommands with modifiers. Invoking `gim` without arguments shows the help message. Unknown commands show an error with a suggestion to run `--help`.
+
 ### Defaults
-All option variables are initialized at the top of `gim.sh`:
-- Boolean args (`_arg_list`, `_arg_mono`, `_arg_experimental`, `_arg_online`) default to `"off"`
-- Value args (`_arg_run`, `_arg_install`, `_arg_delete`) default to empty string
-- `_arg_run_set` tracks whether `-r`/`--run` was explicitly provided
+- `_action=""` — subcommand to execute
+- `_arg_run=""`, `_arg_install=""`, `_arg_delete=""` — version arguments
+- `_arg_mono="off"`, `_arg_experimental="off"`, `_arg_online="off"` — modifier flags
 
 ### `print_help()`
-Prints usage information and all available options.
+Prints usage information with subcommands, global options, modifiers, and examples.
 
 ### `parse_args(args...)`
-Main parsing loop. Iterates through `$@` with a `while test $# -gt 0` loop, matching each argument against a `case` statement:
+Two-phase parsing:
 
-- **Boolean options** (`-l`, `-m`, `-e`, `-o`): Set `_arg_*` to `"on"`. No `--no-` variants.
-- **Value options** (`-i`, `-d`): Require a value. Accept `--option value`, `--option=value`, or `-o value`. Consume the next `$2` as the value and `shift`.
-- **Optional value option** (`-r`, `--run`): Accept optional version. Sets `_arg_run_set=1`. If next arg is not a flag, consume it as the value.
-- **Help/version** (`-h`, `-v`): Print and exit immediately.
-- **Unknown options**: Print error message to stderr, show help, and exit with code 1.
+1. **Subcommand dispatch** (first argument):
+   - `list|run|install|delete` → sets `_action`
+   - `-h|--help` → print help, exit 0
+   - `-v|--version` → print version, exit 0
+   - `""` (no args) → print help, exit 0
+   - `*` (unknown) → error + "Run 'gim --help' for usage information.", exit 1
 
-### Argument Dispatch (end of script)
-After `parse_args "$@"` runs, a conditional chain checks which `_arg_*` variable is set and calls the corresponding function:
-- `_arg_list=on` → `list_installed_editors`
-- `_arg_run_set=1` → `run_editor`
-- `_arg_install` non-empty → `install_editor`
-- `_arg_delete` non-empty → `delete_editor`
+2. **Modifier and positional parsing** (remaining arguments):
+   - Combined modifiers (`-[meo][meo]*`) → decompose into individual flags
+   - `-m|--mono`, `-e|--experimental`, `-o|--online` → set modifier flags
+   - Positional arguments → set version for run/install/delete
+   - Unknown options → error, show help, exit 1
+   - Validates required VERSION for install and delete
+
+### Action Dispatch (end of script)
+
+```bash
+case "$_action" in
+  list) list_installed_editors ;;
+  run) run_editor ;;
+  install) install_editor ;;
+  delete) delete_editor ;;
+esac
+```
+
+### Commands and Modifiers
+
+| Type | Items | Behavior |
+|------|-------|----------|
+| Subcommands | `list`, `run`, `install`, `delete` | First argument; primary operations |
+| Modifiers | `-m`, `-e`, `-o` | Boolean flags; combinable (`-oe`, `-oem`) |
+| Special | `-h`, `-v` | Standalone flags |

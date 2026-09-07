@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
 # --- Defaults ---
-_arg_list="off"
+_action=""
 _arg_run=""
-_arg_run_set=0
 _arg_install=""
 _arg_delete=""
 _arg_mono="off"
@@ -32,81 +31,78 @@ print_help()
   printf '%s\n' "GIM - Godot Install Manager
 Manage multiple Godot editor versions.
 
-Usage: gim [OPTIONS]
+Usage: gim <command> [OPTIONS]
 
-Options:
-  -h, --help                        Show this help message
-  -v, --version                     Show version
-  -l, --list                        List installed Godot editor versions
-  -r, --run [VERSION]               Run a Godot editor version (default: latest)
-  -i, --install <VERSION>           Install a Godot editor version
-  -d, --delete <VERSION>            Delete a Godot editor version
+Commands:
+  list                          List installed Godot editor versions
+  run [VERSION]                 Run a Godot editor version (default: latest)
+  install <VERSION>             Install a Godot editor version
+  delete <VERSION>              Delete a Godot editor version
+
+Global Options:
+  -h, --help                    Show this help message
+  -v, --version                 Show version
 
 Modifiers:
-  -m, --mono                        Download mono build (only with --install)
-  -e, --experimental                Include experimental versions (only with --list --online)
-  -o, --online                      List online versions (only with --list)
+  -m, --mono                    Download mono build (only with install)
+  -e, --experimental            Include experimental versions (only with list)
+  -o, --online                  List online versions (only with list)
 
 Examples:
-  gim -l                            List installed editors
-  gim -r                            Run latest editor
-  gim -r 4.2                        Run specific version
-  gim -i 4.2                        Install stable 4.2
-  gim -i 4.2 -m                     Install mono build of 4.2
-  gim -l -o                         List online versions
-  gim -l -o -e                      List online experimental versions"
+  gim list                      List installed editors
+  gim list -o                   List online versions
+  gim list -oe                  List online experimental versions
+  gim run                       Run latest editor
+  gim run 4.2                   Run specific version
+  gim install 4.2               Install stable 4.2
+  gim install 4.2 -m            Install mono build of 4.2
+  gim delete 4.2                Delete a specific editor"
+}
+
+# --- Error Handling ---
+print_arg_error() {
+  echo "Error: $1" >&2
+  echo "Run 'gim --help' for usage information." >&2
+  exit 1
 }
 
 # --- Parse Arguments ---
 parse_args()
 {
+  # Subcommand dispatch
+  case "${1:-}" in
+    list|run|install|delete)
+      _action="$1"
+      shift
+      ;;
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    -v|--version)
+      echo "$NAME_SHORT $VERSION"
+      exit 0
+      ;;
+    "")
+      print_help
+      exit 0
+      ;;
+    *)
+      print_arg_error "Unknown command '$1'"
+      ;;
+  esac
+
+  # Parse modifiers and positional args
   while test $# -gt 0; do
     case "$1" in
-      -h|--help)
-        print_help
-        exit 0
-        ;;
-      -v|--version)
-        echo "$NAME_SHORT $VERSION"
-        exit 0
-        ;;
-      -l|--list)
-        _arg_list="on"
-        ;;
-      -r|--run)
-        _arg_run_set=1
-        if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
-          _arg_run="$2"
-          shift
-        fi
-        ;;
-      --run=*)
-        _arg_run_set=1
-        _arg_run="${1#--run=}"
-        ;;
-      -i|--install)
-        if [ -z "$2" ] || [ "${2:0:1}" = "-" ]; then
-          echo "Error: Missing required value for '$1'" >&2
-          print_help >&2
-          exit 1
-        fi
-        _arg_install="$2"
+      -[meo][meo]*)
+        # Decompose combined modifiers (e.g., -oe → -o -e)
+        local opts="${1#-}"
         shift
-        ;;
-      --install=*)
-        _arg_install="${1#--install=}"
-        ;;
-      -d|--delete)
-        if [ -z "$2" ] || [ "${2:0:1}" = "-" ]; then
-          echo "Error: Missing required value for '$1'" >&2
-          print_help >&2
-          exit 1
-        fi
-        _arg_delete="$2"
-        shift
-        ;;
-      --delete=*)
-        _arg_delete="${1#--delete=}"
+        for (( i=0; i<${#opts}; i++ )); do
+          set -- "-${opts:$i:1}" "$@"
+        done
+        continue
         ;;
       -m|--mono)
         _arg_mono="on"
@@ -117,14 +113,40 @@ parse_args()
       -o|--online)
         _arg_online="on"
         ;;
+      -[meo])
+        # Single modifier (fallback)
+        case "$1" in
+          -m) _arg_mono="on" ;;
+          -e) _arg_experimental="on" ;;
+          -o) _arg_online="on" ;;
+        esac
+        ;;
+      -*)
+        print_arg_error "Unknown option '$1'"
+        ;;
       *)
-        echo "Error: Unknown option '$1'" >&2
-        print_help >&2
-        exit 1
+        # Positional argument (version for run/install/delete)
+        if [ "$_action" = "run" ] && [ -z "$_arg_run" ]; then
+          _arg_run="$1"
+        elif [ "$_action" = "install" ] && [ -z "$_arg_install" ]; then
+          _arg_install="$1"
+        elif [ "$_action" = "delete" ] && [ -z "$_arg_delete" ]; then
+          _arg_delete="$1"
+        else
+          print_arg_error "Unexpected argument '$1'"
+        fi
         ;;
     esac
     shift
   done
+
+  # Validate required version arguments
+  if [ "$_action" = "install" ] && [ -z "$_arg_install" ]; then
+    print_arg_error "install requires a VERSION argument"
+  fi
+  if [ "$_action" = "delete" ] && [ -z "$_arg_delete" ]; then
+    print_arg_error "delete requires a VERSION argument"
+  fi
 }
 
 # --- Helper Functions ---
@@ -164,6 +186,21 @@ find_editor_by_version() {
   fi
 
   echo "$editor_path"
+}
+
+is_version_installed() {
+  local search_version="$1"
+  # Extract version number before stability suffix (e.g., "4.7.2-stable" → "4.7.2")
+  local version_num="${search_version%%-*}"
+  while IFS= read -r file; do
+    if [ -x "$file" ]; then
+      version=$("$file" --version 2>/dev/null)
+      if [ -n "$version" ] && echo "$version" | grep -qF "$version_num"; then
+        return 0
+      fi
+    fi
+  done < <(find "$editors_dir" -maxdepth 1 -type f -iname "${editor_file_name_start}*" 2>/dev/null)
+  return 1
 }
 
 list_installed_editors() {
@@ -384,6 +421,12 @@ install_editor() {
   local tag
   tag=$(resolve_version "$version") || exit 1
 
+  # Check if version is already installed
+  if is_version_installed "$tag"; then
+    echo "Godot $tag is already installed."
+    exit 0
+  fi
+
   local asset_suffix=""
   if [ "$mono" = "on" ]; then
     asset_suffix="_mono"
@@ -418,12 +461,9 @@ install_editor() {
 # --- Main ---
 parse_args "$@"
 
-if [ "$_arg_list" = "on" ]; then
-  list_installed_editors
-elif [ "$_arg_run_set" = 1 ]; then
-  run_editor
-elif [ -n "$_arg_install" ]; then
-  install_editor
-elif [ -n "$_arg_delete" ]; then
-  delete_editor
-fi
+case "$_action" in
+  list) list_installed_editors ;;
+  run) run_editor ;;
+  install) install_editor ;;
+  delete) delete_editor ;;
+esac
