@@ -30,17 +30,31 @@ editor_file_name_start="Godot"
 print_help()
 {
   printf '%s\n' "GIM - Godot Install Manager
-Manage multiple Godot editor versions."
-  printf 'Usage: %s [-h|--help] [-v|--version] [-l|--list] [-r|--run [VERSION]] [-i|--install VERSION] [-d|--delete VERSION] [-m|--mono] [-e|--experimental] [-o|--online]\n' "$0"
-  printf '\t%s\n' "-h, --help: Prints help"
-  printf '\t%s\n' "-v, --version: Prints version"
-  printf '\t%s\n' "-l, --list: list installed Godot editor versions"
-  printf '\t%s\n' "-r, --run [VERSION]: run a specific installed Godot editor version; if omitted, run latest"
-  printf '\t%s\n' "-i, --install VERSION: install a specific Godot editor version; use --list --online to see available versions"
-  printf '\t%s\n' "-d, --delete VERSION: delete a specific installed Godot editor"
-  printf '\t%s\n' "-m, --mono: download mono build instead of standard build; only works with --install"
-  printf '\t%s\n' "-e, --experimental: include experimental versions in online listing; only works with --online"
-  printf '\t%s\n' "-o, --online: list latest online editor versions; only works with --list"
+Manage multiple Godot editor versions.
+
+Usage: gim [OPTIONS]
+
+Options:
+  -h, --help                        Show this help message
+  -v, --version                     Show version
+  -l, --list                        List installed Godot editor versions
+  -r, --run [VERSION]               Run a Godot editor version (default: latest)
+  -i, --install <VERSION>           Install a Godot editor version
+  -d, --delete <VERSION>            Delete a Godot editor version
+
+Modifiers:
+  -m, --mono                        Download mono build (only with --install)
+  -e, --experimental                Include experimental versions (only with --list --online)
+  -o, --online                      List online versions (only with --list)
+
+Examples:
+  gim -l                            List installed editors
+  gim -r                            Run latest editor
+  gim -r 4.2                        Run specific version
+  gim -i 4.2                        Install stable 4.2
+  gim -i 4.2 -m                     Install mono build of 4.2
+  gim -l -o                         List online versions
+  gim -l -o -e                      List online experimental versions"
 }
 
 # --- Parse Arguments ---

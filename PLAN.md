@@ -1,100 +1,91 @@
-# Plan: Remove Argbash, rewrite argument parsing in pure bash
+# Plan: Improve help output to match CLI conventions
 
 ## Motivation
 
-Argbash can't handle optional values for options (the `-r` issue). Beyond that, it adds a build dependency, a M4 template layer, and generates code that's hard to maintain. Replacing it with a straightforward bash `case` parser removes all of this.
+GIM's current help output doesn't follow common CLI conventions used by popular tools like git, curl, jq, and ls. This makes the help less readable and familiar to users.
 
-## What gets replaced
+## Current help output
 
-| Argbash artifact | Replacement |
-|---|---|
-| `gim.m4` (M4 template) | Delete entirely |
-| `ARG_*` declarations at top of gim.sh | Delete |
-| `die()` function | Inline error messages |
-| `begins_with_short_option()` | Not needed |
-| `_PRINT_HELP` pattern | Not needed |
-| `print_help()` | Rewrite (simpler) |
-| `parse_commandline()` | Rewrite as `parse_args()` |
-| `# [ <-- needed because of Argbash` markers | Delete |
+```
+GIM - Godot Install Manager
+Manage multiple Godot editor versions.
+Usage: /home/devcas/repos/gim/gim.sh [-h|--help] [-v|--version] [-l|--list] ...
+	-h, --help: Prints help
+	-v, --version: Prints version
+	-l, --list: list installed Godot editor versions
+	-r, --run [VERSION]: run a specific installed Godot editor version; if omitted, run latest
+	-i, --install VERSION: install a specific Godot editor version; use --list --online to see available versions
+	-d, --delete VERSION: delete a specific installed Godot editor
+	-m, --mono: download mono build instead of standard build; only works with --install
+	-e, --experimental: include experimental versions in online listing; only works with --online
+	-o, --online: list latest online editor versions; only works with --list
+```
+
+## Issues
+
+| Issue | Current | Convention |
+|-------|---------|------------|
+| Usage line | Full script path | Command name only |
+| Option separator | `:` after flags | Spaces/tabs |
+| Alignment | Tab, no column alignment | Consistent column |
+| Grouping | All options flat | Grouped by category |
+| Capitalization | Mixed ("Prints" vs "list") | Consistent lowercase |
+| Required args | `UPPERCASE` | `<angle brackets>` |
+| Examples | None | Common usage examples |
+
+## Proposed new format
+
+```
+GIM - Godot Install Manager
+Manage multiple Godot editor versions.
+
+Usage: gim [OPTIONS]
+
+Options:
+  -h, --help                        Show this help message
+  -v, --version                     Show version
+  -l, --list                        List installed Godot editor versions
+  -r, --run [VERSION]               Run a Godot editor version (default: latest)
+  -i, --install <VERSION>           Install a Godot editor version
+  -d, --delete <VERSION>            Delete a Godot editor version
+
+Modifiers:
+  -m, --mono                        Download mono build (only with --install)
+  -e, --experimental                Include experimental versions (only with --list --online)
+  -o, --online                      List online versions (only with --list)
+
+Examples:
+  gim -l                            List installed editors
+  gim -r                            Run latest editor
+  gim -r 4.2                        Run specific version
+  gim -i 4.2                        Install stable 4.2
+  gim -i 4.2 -m                     Install mono build of 4.2
+  gim -l -o                         List online versions
+  gim -l -o -e                      List online experimental versions
+```
 
 ## Changes
 
-### 1. Delete `gim.m4`
+### 1. Rewrite `print_help()` in `gim.sh`
 
-No longer the source of truth. `gim.sh` becomes the single file to edit.
+Replace the current implementation with:
 
-### 2. Rewrite `gim.sh`
-
-Remove everything above the constants section (lines 1-178). Replace with:
-
-- **Initialization block** — set all `_arg_*` defaults
-- **`print_help()`** — rewritten, no argbash boilerplate, no `--no-` variants
-- **`parse_args()`** — while/case loop handling all options:
-  - `-h`/`--help` → print help, exit
-  - `-v`/`--version` → print version, exit
-  - `-l`/`--list` → set `_arg_list="on"`
-  - `-r`/`--run [VERSION]` / `--run=VERSION` → optional value, sets `_arg_run_set=1` and optionally `_arg_run`
-  - `-i`/`--install VERSION` / `--install=VERSION` → required value
-  - `-d`/`--delete VERSION` / `--delete=VERSION` → required value
-  - `-m`/`--mono` → set `_arg_mono="on"`
-  - `-e`/`--experimental` → set `_arg_experimental="on"`
-  - `-o`/`--online` → set `_arg_online="on"`
-  - `*` → error + print help to stderr
-- **Call `parse_args "$@"`** instead of `parse_commandline "$@"`
-
-### 3. Boolean flags — no `--no-` variants
-
-| Before | After |
-|---|---|
-| `-l`/`--list`/`--no-list` | `-l`/`--list` |
-| `-m`/`--mono`/`--no-mono` | `-m`/`--mono` |
-| `-e`/`--experimental`/`--no-experimental` | `-e`/`--experimental` |
-| `-o`/`--online`/`--no-online` | `-o`/`--online` |
-
-Each is off by default; no toggling needed.
-
-### 4. Update dispatch logic
-
-Change `elif [ -n "$_arg_run" ]` to `elif [ "$_arg_run_set" = 1 ]` so `-r` without a version triggers `run_editor`.
-
-### 5. Delete `.opencode/` folder
-
-Stale plans directory, no longer needed.
-
-### 6. Update `CLAUDE.md`
-
-- Remove "Argbash Parse Code" section
-- Add "Argument Parsing" section documenting `print_help()`, `parse_args()`, and variable defaults
-- Remove argbash from dependencies/overview references
-- Update Build/Regenerate section (no more `argbash` command)
-- Update Key Files (`gim.m4` no longer exists)
-
-### 7. Update `args.md`
-
-Remove `--no-` references from boolean flags.
+- **Usage line**: Use `gim` instead of `$0`
+- **Option alignment**: Pad flags to 36 characters, then description
+- **Grouping**: Split into "Options" (core actions) and "Modifiers" (behavior flags)
+- **Capitalization**: Start all descriptions with lowercase
+- **Argument notation**: Use `<VERSION>` for required, `[VERSION]` for optional
+- **Separator**: Replace `:` with spaces
+- **Examples section**: Add 7 common usage examples
 
 ## Files affected
 
 | File | Action |
-|---|---|
-| `gim.m4` | Delete |
-| `gim.sh` | Rewrite (argbash removal, pure bash parser) |
-| `CLAUDE.md` | Update (remove argbash references, document new parser) |
-| `args.md` | Update (remove `--no-` from boolean flags) |
-| `PLAN.md` | Replace with this plan's content |
-| `.opencode/` | Delete |
+|------|--------|
+| `gim.sh` | Rewrite `print_help()` function |
 
-## Usage examples after change
+## Verification
 
-```
-gim -r            # run latest, then exit
-gim -r 4.2        # run specific version, then exit
-gim -r=4.2        # run specific version (equals form)
-gim --run         # run latest, then exit
-gim --run 4.2     # run specific version, then exit
-gim -i 4.2 -m     # install 4.2 mono build
-```
-
-## Limitations compared to argbash
-
-- No combined short options (`-lm` won't work; must use `-l -m`). This is fine — the current argbash decomposition of combined options is complex and rarely used.
+- Run `gim.sh --help` to verify output format
+- Run `gim.sh -h` to verify short flag works
+- Run `bash -n gim.sh` to verify syntax
