@@ -203,6 +203,39 @@ parse_version_key "$tag"
 
 Use `$_pv_key` where `key` was used (line 359).
 
+**d. Add `version_gt()` after `parse_version_key()`:**
+
+Lexicographic comparison `[[ "$tag" > "${latest_stable[$key]}" ]]` is locale-dependent and fails for semantic versions (e.g., `4.7-stable` vs `4.7.2-stable`). Add numeric comparison:
+
+```bash
+# Compare two version strings numerically (greater than).
+# Strips suffixes (e.g., -stable, -rc1) and compares major.minor.patch.
+version_gt() {
+  local v1="${1%%-*}" v2="${2%%-*}"
+  IFS='.' read -r major1 minor1 patch1 <<< "$v1"
+  IFS='.' read -r major2 minor2 patch2 <<< "$v2"
+  [ "${major1:-0}" -gt "${major2:-0}" ] ||
+  { [ "${major1:-0}" -eq "${major2:-0}" ] && [ "${minor1:-0}" -gt "${minor2:-0}" ]; } ||
+  { [ "${major1:-0}" -eq "${major2:-0}" ] && [ "${minor1:-0}" -eq "${minor2:-0}" ] && [ "${patch1:-0}" -gt "${patch2:-0}" ]; }
+}
+```
+
+**e. Update `list_installed_editors()` comparison (line 264):**
+
+Replace:
+```bash
+if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
+```
+
+With:
+```bash
+if [ -z "${latest_stable[$key]}" ] || version_gt "$tag" "${latest_stable[$key]}"; then
+```
+
+**f. Update `resolve_version()` comparison (line 368):**
+
+Same replacement as above.
+
 ## Files Affected
 
 | File | Action |
@@ -212,8 +245,9 @@ Use `$_pv_key` where `key` was used (line 359).
 | `gim.sh` | Update `delete_editor()` with fallback logic |
 | `gim.sh` | Update help text and examples |
 | `gim.sh` | Add `parse_version_key()` function |
-| `gim.sh` | Update `list_installed_editors()` to use `parse_version_key` |
-| `gim.sh` | Update `resolve_version()` to use `parse_version_key` |
+| `gim.sh` | Add `version_gt()` function |
+| `gim.sh` | Update `list_installed_editors()` to use `parse_version_key` and `version_gt` |
+| `gim.sh` | Update `resolve_version()` to use `parse_version_key` and `version_gt` |
 
 ## Fallback Behavior
 

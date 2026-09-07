@@ -228,6 +228,17 @@ parse_version_key() {
   _pv_key="${major}.${minor}"
 }
 
+# Compare two version strings numerically (greater than).
+# Strips suffixes (e.g., -stable, -rc1) and compares major.minor.patch.
+version_gt() {
+  local v1="${1%%-*}" v2="${2%%-*}"
+  IFS='.' read -r major1 minor1 patch1 <<< "$v1"
+  IFS='.' read -r major2 minor2 patch2 <<< "$v2"
+  [ "${major1:-0}" -gt "${major2:-0}" ] ||
+  { [ "${major1:-0}" -eq "${major2:-0}" ] && [ "${minor1:-0}" -gt "${minor2:-0}" ]; } ||
+  { [ "${major1:-0}" -eq "${major2:-0}" ] && [ "${minor1:-0}" -eq "${minor2:-0}" ] && [ "${patch1:-0}" -gt "${patch2:-0}" ]; }
+}
+
 list_installed_editors() {
   if [ "$_arg_online" = "on" ]; then
     check_online_dependencies
@@ -261,7 +272,7 @@ list_installed_editors() {
         if [ "$prerelease" = "false" ]; then
           parse_version_key "$tag"
           local key="$_pv_key"
-          if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
+          if [ -z "${latest_stable[$key]}" ] || version_gt "$tag" "${latest_stable[$key]}"; then
             latest_stable[$key]="$tag"
           fi
         fi
@@ -363,7 +374,7 @@ resolve_version() {
     else
       parse_version_key "$tag"
       local key="$_pv_key"
-      if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
+      if [ -z "${latest_stable[$key]}" ] || version_gt "$tag" "${latest_stable[$key]}"; then
         latest_stable[$key]="$tag"
       fi
     fi
