@@ -28,7 +28,7 @@ editor_file_name_start="Godot"
 # --- Help ---
 print_help()
 {
-  printf '%s\n' "GIM - Godot Install Manager
+  printf '%s\n' "Godot Install Manager - v${VERSION}
 Manage multiple Godot editor versions.
 
 Usage: gim <command> [OPTIONS]
