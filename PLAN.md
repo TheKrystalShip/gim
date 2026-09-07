@@ -145,6 +145,64 @@ Add examples:
   gim delete 4.2 -m                Delete mono build of 4.2
 ```
 
+### 5. Fix `list -o` Duplicate Versions
+
+**Status: In Progress**
+
+#### Motivation
+
+`gim list -o` shows both `4.7-stable` and `4.7.2-stable` because version parsing fails for tags without a patch version. For `4.7-stable`, `${remainder%%.*}` on `7-stable` returns `7-stable` (no `.` to match), producing key `4.7-stable` instead of `4.7`.
+
+#### Changes
+
+**a. Add `parse_version_key()` after `is_version_installed()`:**
+
+```bash
+parse_version_key() {
+  local tag="$1"
+  local version="${tag%%-*}"
+  local major="${version%%.*}"
+  local remainder="${version#*.}"
+  local minor="${remainder%%.*}"
+  _pv_version="$version"
+  _pv_key="${major}.${minor}"
+}
+```
+
+Sets globals: `_pv_key` (e.g., `4.7`) and `_pv_version` (e.g., `4.7.2`).
+
+**b. Update `list_installed_editors()` (lines 248-255):**
+
+Replace:
+```bash
+local major="${tag%%.*}"
+local remainder="${tag#*.}"
+local minor="${remainder%%.*}"
+local key="${major}.${minor}"
+```
+
+With:
+```bash
+parse_version_key "$tag"
+local key="$_pv_key"
+```
+
+**c. Update `resolve_version()` (lines 350-352):**
+
+Replace:
+```bash
+local major="${tag%%.*}"
+local remainder="${tag#*.}"
+local minor="${remainder%%.*}"
+```
+
+With:
+```bash
+parse_version_key "$tag"
+```
+
+Use `$_pv_key` where `key` was used (line 359).
+
 ## Files Affected
 
 | File | Action |
@@ -153,6 +211,9 @@ Add examples:
 | `gim.sh` | Update `run_editor()` with fallback logic |
 | `gim.sh` | Update `delete_editor()` with fallback logic |
 | `gim.sh` | Update help text and examples |
+| `gim.sh` | Add `parse_version_key()` function |
+| `gim.sh` | Update `list_installed_editors()` to use `parse_version_key` |
+| `gim.sh` | Update `resolve_version()` to use `parse_version_key` |
 
 ## Fallback Behavior
 

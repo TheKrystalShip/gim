@@ -218,6 +218,16 @@ is_version_installed() {
   return 1
 }
 
+parse_version_key() {
+  local tag="$1"
+  local version="${tag%%-*}"
+  local major="${version%%.*}"
+  local remainder="${version#*.}"
+  local minor="${remainder%%.*}"
+  _pv_version="$version"
+  _pv_key="${major}.${minor}"
+}
+
 list_installed_editors() {
   if [ "$_arg_online" = "on" ]; then
     check_online_dependencies
@@ -249,10 +259,8 @@ list_installed_editors() {
         local tag="${entry%%|*}"
         local prerelease="${entry#*|}"
         if [ "$prerelease" = "false" ]; then
-          local major="${tag%%.*}"
-          local remainder="${tag#*.}"
-          local minor="${remainder%%.*}"
-          local key="${major}.${minor}"
+          parse_version_key "$tag"
+          local key="$_pv_key"
           if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
             latest_stable[$key]="$tag"
           fi
@@ -347,16 +355,14 @@ resolve_version() {
   for entry in "${available_releases[@]}"; do
     local tag="${entry%%|*}"
     local prerelease="${entry#*|}"
-    local major="${tag%%.*}"
-    local remainder="${tag#*.}"
-    local minor="${remainder%%.*}"
 
     if [ "$prerelease" = "true" ]; then
       if [ -z "$latest_experimental" ] || [[ "$tag" > "$latest_experimental" ]]; then
         latest_experimental="$tag"
       fi
     else
-      local key="${major}.${minor}"
+      parse_version_key "$tag"
+      local key="$_pv_key"
       if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
         latest_stable[$key]="$tag"
       fi
