@@ -1,5 +1,7 @@
 # Plan: Support `-m` for All Subcommands with Fallback
 
+**Status: Executed**
+
 ## Motivation
 
 The `-m` flag currently only works with `install`. Users who install mono builds expect to run and delete them without specifying `-m` again. If only mono versions are installed, `run` and `delete` should fallback to the mono build.
@@ -42,7 +44,7 @@ find_editor_by_version() {
 
 ### 2. Update `run_editor()` (lines 374-392)
 
-Add fallback logic: if specified mono flag not found, try opposite.
+Add fallback logic with informational message: if specified mono flag not found, inform user and try opposite.
 
 ```bash
 run_editor() {
@@ -59,8 +61,10 @@ run_editor() {
     local latest_version="${installed_editors[-1]}"
     editor_path=$(find_editor_by_version "$latest_version" "$mono" 2>/dev/null) || {
       if [ "$mono" = "on" ]; then
+        echo "Mono build not found for $latest_version, using standard build." >&2
         editor_path=$(find_editor_by_version "$latest_version" "off") || exit 1
       else
+        echo "Standard build not found for $latest_version, using mono build." >&2
         editor_path=$(find_editor_by_version "$latest_version" "on") || exit 1
       fi
     }
@@ -69,8 +73,10 @@ run_editor() {
   else
     editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
       if [ "$mono" = "on" ]; then
+        echo "Mono build not found for $search_version, using standard build." >&2
         editor_path=$(find_editor_by_version "$search_version" "off") || exit 1
       else
+        echo "Standard build not found for $search_version, using mono build." >&2
         editor_path=$(find_editor_by_version "$search_version" "on") || exit 1
       fi
     }
@@ -82,7 +88,7 @@ run_editor() {
 
 ### 3. Update `delete_editor()` (lines 395-413)
 
-Add fallback logic with error handling:
+Add fallback logic with informational message and error handling:
 
 ```bash
 delete_editor() {
@@ -92,11 +98,13 @@ delete_editor() {
 
   editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
     if [ "$mono" = "on" ]; then
+      echo "Mono build not found for $search_version, using standard build." >&2
       editor_path=$(find_editor_by_version "$search_version" "off") || {
         echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
         exit 1
       }
     else
+      echo "Standard build not found for $search_version, using mono build." >&2
       editor_path=$(find_editor_by_version "$search_version" "on") || {
         echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
         exit 1
@@ -152,13 +160,13 @@ Add examples:
 |---------|----------|----------|
 | `gim run 4.7` | Only non-mono installed | Runs non-mono |
 | `gim run 4.7` | Only mono installed | Runs mono |
-| `gim run 4.7 -m` | Only non-mono installed | Runs non-mono |
+| `gim run 4.7 -m` | Only non-mono installed | Prints "Mono build not found…", runs non-mono |
 | `gim run 4.7 -m` | Only mono installed | Runs mono |
 | `gim run 4.7` | Both installed | Runs non-mono |
 | `gim run 4.7 -m` | Both installed | Runs mono |
 | `gim delete 4.7` | Only non-mono installed | Deletes non-mono |
 | `gim delete 4.7` | Only mono installed | Deletes mono |
-| `gim delete 4.7 -m` | Only non-mono installed | Deletes non-mono |
+| `gim delete 4.7 -m` | Only non-mono installed | Prints "Mono build not found…", deletes non-mono |
 | `gim delete 4.7 -m` | Only mono installed | Deletes mono |
 | `gim delete 4.7` | Both installed | Deletes non-mono |
 | `gim delete 4.7 -m` | Both installed | Deletes mono |

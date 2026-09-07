@@ -44,7 +44,7 @@ Global Options:
   -v, --version                 Show version
 
 Modifiers:
-  -m, --mono                    Download mono build (only with install)
+  -m, --mono                    Use mono build (with install, run, or delete)
   -e, --experimental            Include experimental versions (only with list)
   -o, --online                  List online versions (only with list)
 
@@ -56,6 +56,8 @@ Examples:
   gim run 4.2                   Run specific version
   gim install 4.2               Install stable 4.2
   gim install 4.2 -m            Install mono build of 4.2
+  gim run 4.2 -m                Run mono build of 4.2
+  gim delete 4.2 -m             Delete mono build of 4.2
   gim delete 4.2                Delete a specific editor"
 }
 
@@ -168,17 +170,23 @@ find_installed_editors() {
 
 find_editor_by_version() {
   local search_version="$1"
+  local mono="$2"
   local editor_path=""
+  local version_num="${search_version%%-*}"
+
+  local pattern="${editor_file_name_start}_v${version_num}"
+  if [ "$mono" = "on" ]; then
+    pattern="${pattern}*_mono*"
+  else
+    pattern="${pattern}*_linux*"
+  fi
 
   while IFS= read -r file; do
-    if [ -x "$file" ]; then
-      version=$("$file" --version 2>/dev/null)
-      if [ -n "$version" ] && echo "$version" | grep -qF "$search_version"; then
-        editor_path="$file"
-        break
-      fi
+    if [ -n "$file" ]; then
+      editor_path="$file"
+      break
     fi
-  done < <(find "$editors_dir" -maxdepth 1 -type f -iname "${editor_file_name_start}*" 2>/dev/null)
+  done < <(find "$editors_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
 
   if [ -z "$editor_path" ]; then
     echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
@@ -373,6 +381,7 @@ resolve_version() {
 
 run_editor() {
   local search_version="$_arg_run"
+  local mono="$_arg_mono"
   local editor_path
 
   if [ -z "$search_version" ]; then
@@ -382,11 +391,27 @@ run_editor() {
       exit 1
     fi
     local latest_version="${installed_editors[-1]}"
-    editor_path=$(find_editor_by_version "$latest_version") || exit 1
+    editor_path=$(find_editor_by_version "$latest_version" "$mono" 2>/dev/null) || {
+      if [ "$mono" = "on" ]; then
+        echo "Mono build not found for $latest_version, using standard build." >&2
+        editor_path=$(find_editor_by_version "$latest_version" "off") || exit 1
+      else
+        echo "Standard build not found for $latest_version, using mono build." >&2
+        editor_path=$(find_editor_by_version "$latest_version" "on") || exit 1
+      fi
+    }
     echo "Running latest editor: $latest_version"
     "$editor_path" &
   else
-    editor_path=$(find_editor_by_version "$search_version") || exit 1
+    editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
+      if [ "$mono" = "on" ]; then
+        echo "Mono build not found for $search_version, using standard build." >&2
+        editor_path=$(find_editor_by_version "$search_version" "off") || exit 1
+      else
+        echo "Standard build not found for $search_version, using mono build." >&2
+        editor_path=$(find_editor_by_version "$search_version" "on") || exit 1
+      fi
+    }
     echo "Running editor: $editor_path"
     "$editor_path" &
   fi
@@ -394,9 +419,24 @@ run_editor() {
 
 delete_editor() {
   local search_version="$_arg_delete"
+  local mono="$_arg_mono"
   local editor_path
 
-  editor_path=$(find_editor_by_version "$search_version") || exit 1
+  editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
+    if [ "$mono" = "on" ]; then
+      echo "Mono build not found for $search_version, using standard build." >&2
+      editor_path=$(find_editor_by_version "$search_version" "off") || {
+        echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
+        exit 1
+      }
+    else
+      echo "Standard build not found for $search_version, using mono build." >&2
+      editor_path=$(find_editor_by_version "$search_version" "on") || {
+        echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
+        exit 1
+      }
+    fi
+  }
 
   echo "Found editor: $editor_path"
   read -r -p "Are you sure you want to delete this editor? [y/N] " response
@@ -415,6 +455,8 @@ delete_editor() {
 install_editor() {
   local version="$_arg_install"
   local mono="$_arg_mono"
+  local platform="linux"
+  local architecture="x86_64"
 
   check_online_dependencies
 
@@ -439,7 +481,14 @@ install_editor() {
     asset_suffix="_mono"
   fi
 
-  local zip_name="Godot_v${tag}${asset_suffix}_linux_x86_64.zip"
+
+  # For some reason there's a zip file name difference between native and mono builds
+  local zip_name
+  if [ "$mono" = "on" ]; then
+    zip_name="Godot_v${tag}${asset_suffix}_${platform}_${architecture}.zip"
+  else
+    zip_name="Godot_v${tag}${asset_suffix}_${platform}.${architecture}.zip"
+  fi
   local download_url="https://github.com/godotengine/godot-builds/releases/download/${tag}/${zip_name}"
 
   local tmp_dir
