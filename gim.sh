@@ -347,10 +347,6 @@ fetch_releases() {
     echo "Error: Failed to fetch releases from GitHub (HTTP $http_code)." >&2
     rm -f /tmp/gim_releases.json
     exit 1
-  elif [ "$http_code" != "404" ]; then
-    echo "Error: Failed to find release, please inform creator!" >&2
-    rm -f /tmp/gim_releases.json
-    exit 1
   fi
 
   while IFS= read -r line; do
