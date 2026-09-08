@@ -153,6 +153,17 @@ parse_args()
 
 # --- Helper Functions ---
 
+build_editor_pattern() {
+  local version="$1" mono="$2"
+  local version_num="${version%%-*}"
+  local pattern="${editor_file_name_start}_v${version_num}"
+  if [ "$mono" = "on" ]; then
+    echo "${pattern}*_mono*"
+  else
+    echo "${pattern}*_linux*"
+  fi
+}
+
 find_installed_editors() {
   installed_editors=()
   if [ ! -d "$editors_dir" ]; then
@@ -172,14 +183,8 @@ find_editor_by_version() {
   local search_version="$1"
   local mono="$2"
   local editor_path=""
-  local version_num="${search_version%%-*}"
-
-  local pattern="${editor_file_name_start}_v${version_num}"
-  if [ "$mono" = "on" ]; then
-    pattern="${pattern}*_mono*"
-  else
-    pattern="${pattern}*_linux*"
-  fi
+  local pattern
+  pattern=$(build_editor_pattern "$search_version" "$mono")
 
   while IFS= read -r file; do
     if [ -n "$file" ]; then
@@ -199,16 +204,8 @@ find_editor_by_version() {
 is_version_installed() {
   local search_version="$1"
   local mono="$2"
-  # Extract version number before stability suffix (e.g., "4.7.2-stable" → "4.7.2")
-  local version_num="${search_version%%-*}"
-
-  # Build search pattern based on mono flag
-  local pattern="${editor_file_name_start}_v${version_num}"
-  if [ "$mono" = "on" ]; then
-    pattern="${pattern}*_mono*"
-  else
-    pattern="${pattern}*_linux*"
-  fi
+  local pattern
+  pattern=$(build_editor_pattern "$search_version" "$mono")
 
   while IFS= read -r file; do
     if [ -n "$file" ]; then
@@ -303,6 +300,17 @@ list_installed_editors() {
 }
 
 available_releases=()
+
+http_fetch() {
+  local output="$1" url="$2"
+  if command -v curl &> /dev/null; then
+    curl -fSL -o "$output" "$url"
+  elif command -v wget &> /dev/null; then
+    wget -q -O "$output" "$url"
+  else
+    return 1
+  fi
+}
 
 check_online_dependencies() {
   if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
@@ -400,10 +408,27 @@ resolve_version() {
   return 1
 }
 
+resolve_editor_with_fallback() {
+  local version="$1" mono="$2"
+  local editor_path
+  editor_path=$(find_editor_by_version "$version" "$mono" 2>/dev/null) && {
+    echo "$editor_path"
+    return 0
+  }
+  if [ "$mono" = "on" ]; then
+    echo "Mono build not found for $version, using standard build." >&2
+    editor_path=$(find_editor_by_version "$version" "off") || return 1
+  else
+    echo "Standard build not found for $version, using mono build." >&2
+    editor_path=$(find_editor_by_version "$version" "on") || return 1
+  fi
+  echo "$editor_path"
+}
+
 run_editor() {
   local search_version="$_arg_run"
   local mono="$_arg_mono"
-  local editor_path
+  local version display_label
 
   if [ -z "$search_version" ]; then
     find_installed_editors
@@ -411,31 +436,17 @@ run_editor() {
       echo "No Godot editors found in $editors_dir" >&2
       exit 1
     fi
-    local latest_version="${installed_editors[-1]}"
-    editor_path=$(find_editor_by_version "$latest_version" "$mono" 2>/dev/null) || {
-      if [ "$mono" = "on" ]; then
-        echo "Mono build not found for $latest_version, using standard build." >&2
-        editor_path=$(find_editor_by_version "$latest_version" "off") || exit 1
-      else
-        echo "Standard build not found for $latest_version, using mono build." >&2
-        editor_path=$(find_editor_by_version "$latest_version" "on") || exit 1
-      fi
-    }
-    echo "Running latest editor: $latest_version"
-    "$editor_path" &
+    version="${installed_editors[-1]}"
+    display_label="latest editor: $version"
   else
-    editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
-      if [ "$mono" = "on" ]; then
-        echo "Mono build not found for $search_version, using standard build." >&2
-        editor_path=$(find_editor_by_version "$search_version" "off") || exit 1
-      else
-        echo "Standard build not found for $search_version, using mono build." >&2
-        editor_path=$(find_editor_by_version "$search_version" "on") || exit 1
-      fi
-    }
-    echo "Running editor: $editor_path"
-    "$editor_path" &
+    version="$search_version"
+    display_label="editor"
   fi
+
+  local editor_path
+  editor_path=$(resolve_editor_with_fallback "$version" "$mono") || exit 1
+  echo "Running $display_label"
+  "$editor_path" &
 }
 
 delete_editor() {
@@ -443,21 +454,7 @@ delete_editor() {
   local mono="$_arg_mono"
   local editor_path
 
-  editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
-    if [ "$mono" = "on" ]; then
-      echo "Mono build not found for $search_version, using standard build." >&2
-      editor_path=$(find_editor_by_version "$search_version" "off") || {
-        echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
-        exit 1
-      }
-    else
-      echo "Standard build not found for $search_version, using mono build." >&2
-      editor_path=$(find_editor_by_version "$search_version" "on") || {
-        echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
-        exit 1
-      }
-    fi
-  }
+  editor_path=$(resolve_editor_with_fallback "$search_version" "$mono") || exit 1
 
   echo "Found editor: $editor_path"
   read -r -p "Are you sure you want to delete this editor? [y/N] " response
@@ -497,18 +494,12 @@ install_editor() {
     exit 0
   fi
 
-  local asset_suffix=""
-  if [ "$mono" = "on" ]; then
-    asset_suffix="_mono"
-  fi
-
-
   # For some reason there's a zip file name difference between native and mono builds
   local zip_name
   if [ "$mono" = "on" ]; then
-    zip_name="Godot_v${tag}${asset_suffix}_${platform}_${architecture}.zip"
+    zip_name="Godot_v${tag}_mono_${platform}_${architecture}.zip"
   else
-    zip_name="Godot_v${tag}${asset_suffix}_${platform}.${architecture}.zip"
+    zip_name="Godot_v${tag}_${platform}.${architecture}.zip"
   fi
   local download_url="https://github.com/godotengine/godot-builds/releases/download/${tag}/${zip_name}"
 
@@ -516,11 +507,11 @@ install_editor() {
   tmp_dir=$(mktemp -d)
 
   echo "Downloading $download_url..."
-  if command -v curl &> /dev/null; then
-    curl -fSL -o "$tmp_dir/$zip_name" "$download_url" || { echo "Download failed." >&2; rm -rf "$tmp_dir"; exit 1; }
-  else
-    wget -q -O "$tmp_dir/$zip_name" "$download_url" || { echo "Download failed." >&2; rm -rf "$tmp_dir"; exit 1; }
-  fi
+  http_fetch "$tmp_dir/$zip_name" "$download_url" || {
+    echo "Download failed." >&2
+    rm -rf "$tmp_dir"
+    exit 1
+  }
 
   echo "Extracting..."
   unzip -o -q "$tmp_dir/$zip_name" -d "$tmp_dir"

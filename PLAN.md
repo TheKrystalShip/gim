@@ -1,275 +1,224 @@
-# Plan: Support `-m` for All Subcommands with Fallback
+# Refactor Plan: Simplify Near-Identical Branching in gim.sh
 
-**Status: Executed**
+## Status: COMPLETE
 
-## Motivation
+All five patterns have been implemented and verified (syntax check passes).
 
-The `-m` flag currently only works with `install`. Users who install mono builds expect to run and delete them without specifying `-m` again. If only mono versions are installed, `run` and `delete` should fallback to the mono build.
+---
 
-## Changes
+## Overview
 
-### 1. Update `find_editor_by_version()` (lines 169-189)
+`gim.sh` contains multiple if-statements where both branches perform nearly identical
+logic, differing only in a variable name, a string literal, or a fallback target.
+These duplications hurt maintainability and increase the risk of inconsistency when
+one branch is updated but the other is not.
 
-Add mono parameter and use filename-based matching:
+---
+
+## Pattern A: Mono/Linux File Pattern
+
+**Status:** COMPLETE
+
+**Locations:** `find_editor_by_version` (lines 177-182), `is_version_installed` (lines 206-211)
+
+**Problem:** Both build an identical glob pattern from `$mono` — copy-pasted.
 
 ```bash
-find_editor_by_version() {
-  local search_version="$1"
-  local mono="$2"
-  local editor_path=""
-  local version_num="${search_version%%-*}"
+if [ "$mono" = "on" ]; then
+  pattern="${pattern}*_mono*"
+else
+  pattern="${pattern}*_linux*"
+fi
+```
 
-  local pattern="${editor_file_name_start}_v${version_num}"
+**Suggestion:** Extract to a helper:
+
+```bash
+build_editor_pattern() {
+  local version="$1" mono="$2"
+  local pattern="${editor_file_name_start}_v${version}"
   if [ "$mono" = "on" ]; then
-    pattern="${pattern}*_mono*"
+    echo "${pattern}*_mono*"
   else
-    pattern="${pattern}*_linux*"
+    echo "${pattern}*_linux*"
   fi
+}
+```
 
-  while IFS= read -r file; do
-    if [ -n "$file" ]; then
-      editor_path="$file"
-      break
-    fi
-  done < <(find "$editors_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
+Both call sites replace ~5 lines with a single function call.
 
-  if [ -z "$editor_path" ]; then
-    echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
-    return 1
+---
+
+## Pattern B: Fallback Build Resolution
+
+**Status:** COMPLETE
+
+**Locations:** `run_editor` (lines 414-423), `run_editor` (lines 427-434), `delete_editor` (lines 446-459)
+
+**Problem:** Three blocks follow the same pattern — try one build type, fall back to
+the other on failure. They differ only in the version variable and error handling.
+
+| Block | Version var | Error behavior |
+|-------|-------------|----------------|
+| `run_editor` (no version) | `$latest_version` | `exit 1` |
+| `run_editor` (with version) | `$search_version` | `exit 1` |
+| `delete_editor` | `$search_version` | nested `echo` + `exit 1` |
+
+**Suggestion:** Extract to a helper:
+
+```bash
+resolve_editor_with_fallback() {
+  local version="$1" mono="$2"
+  local editor_path
+  editor_path=$(find_editor_by_version "$version" "$mono" 2>/dev/null) && {
+    echo "$editor_path"
+    return 0
+  }
+  if [ "$mono" = "on" ]; then
+    echo "Mono build not found for $version, using standard build." >&2
+    editor_path=$(find_editor_by_version "$version" "off") || return 1
+  else
+    echo "Standard build not found for $version, using mono build." >&2
+    editor_path=$(find_editor_by_version "$version" "on") || return 1
   fi
-
   echo "$editor_path"
 }
 ```
 
-### 2. Update `run_editor()` (lines 374-392)
+`delete_editor`'s extra nested error message is redundant since `find_editor_by_version`
+already prints the same error. The helper's `return 1` is sufficient for callers to
+handle with their own `exit 1`.
 
-Add fallback logic with informational message: if specified mono flag not found, inform user and try opposite.
+---
+
+## Pattern C: Curl vs Wget Abstraction
+
+**Status:** COMPLETE
+
+**Locations:** `fetch_releases` (lines 327-331), `install_editor` (lines 519-523)
+
+**Problem:** Both branch on `command -v curl` to choose between curl and wget.
+
+**Suggestion:** Extract a generic download helper:
+
+```bash
+http_fetch() {
+  local output="$1" url="$2"
+  if command -v curl &> /dev/null; then
+    curl -fSL -o "$output" "$url"
+  elif command -v wget &> /dev/null; then
+    wget -q -O "$output" "$url"
+  else
+    return 1
+  fi
+}
+```
+
+`fetch_releases` needs the HTTP status code, so it would use a variant or keep a
+thin wrapper. The `install_editor` download + error block (lines 519-523) collapses
+to:
+
+```bash
+http_fetch "$tmp_dir/$zip_name" "$download_url" || {
+  echo "Download failed." >&2
+  rm -rf "$tmp_dir"
+  exit 1
+}
+```
+
+---
+
+## Pattern D: `run_editor` Outer Branch Duplication
+
+**Status:** COMPLETE
+
+**Location:** `run_editor` (lines 403-438)
+
+**Problem:** The two branches of the outer if/else differ only in:
+1. How the version is resolved (`installed_editors[-1]` vs `$search_version`)
+2. The log message (`"Running latest editor"` vs `"Running editor"`)
+
+The inner fallback logic (lines 415-423 vs 427-434) is completely identical
+except for the variable name.
+
+**Suggestion:** Restructure to resolve the version first, then use a single
+fallback path:
 
 ```bash
 run_editor() {
   local search_version="$_arg_run"
   local mono="$_arg_mono"
-  local editor_path
+  local version display_label
 
   if [ -z "$search_version" ]; then
     find_installed_editors
-    if [ ${#installed_editors[@]} -eq 0 ]; then
+    [ ${#installed_editors[@]} -eq 0 ] && {
       echo "No Godot editors found in $editors_dir" >&2
       exit 1
-    fi
-    local latest_version="${installed_editors[-1]}"
-    editor_path=$(find_editor_by_version "$latest_version" "$mono" 2>/dev/null) || {
-      if [ "$mono" = "on" ]; then
-        echo "Mono build not found for $latest_version, using standard build." >&2
-        editor_path=$(find_editor_by_version "$latest_version" "off") || exit 1
-      else
-        echo "Standard build not found for $latest_version, using mono build." >&2
-        editor_path=$(find_editor_by_version "$latest_version" "on") || exit 1
-      fi
     }
-    echo "Running latest editor: $latest_version"
-    "$editor_path" &
+    version="${installed_editors[-1]}"
+    display_label="latest editor: $version"
   else
-    editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
-      if [ "$mono" = "on" ]; then
-        echo "Mono build not found for $search_version, using standard build." >&2
-        editor_path=$(find_editor_by_version "$search_version" "off") || exit 1
-      else
-        echo "Standard build not found for $search_version, using mono build." >&2
-        editor_path=$(find_editor_by_version "$search_version" "on") || exit 1
-      fi
-    }
-    echo "Running editor: $editor_path"
-    "$editor_path" &
+    version="$search_version"
+    display_label="editor"
   fi
-}
-```
 
-### 3. Update `delete_editor()` (lines 395-413)
-
-Add fallback logic with informational message and error handling:
-
-```bash
-delete_editor() {
-  local search_version="$_arg_delete"
-  local mono="$_arg_mono"
   local editor_path
-
-  editor_path=$(find_editor_by_version "$search_version" "$mono" 2>/dev/null) || {
-    if [ "$mono" = "on" ]; then
-      echo "Mono build not found for $search_version, using standard build." >&2
-      editor_path=$(find_editor_by_version "$search_version" "off") || {
-        echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
-        exit 1
-      }
-    else
-      echo "Standard build not found for $search_version, using mono build." >&2
-      editor_path=$(find_editor_by_version "$search_version" "on") || {
-        echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
-        exit 1
-      }
-    fi
-  }
-
-  echo "Found editor: $editor_path"
-  read -r -p "Are you sure you want to delete this editor? [y/N] " response
-  case "$response" in
-    [yY][eE][sS]|[yY])
-      rm "$editor_path"
-      echo "Deleted $editor_path"
-      ;;
-    *)
-      echo "Aborted."
-      exit 0
-      ;;
-  esac
+  editor_path=$(resolve_editor_with_fallback "$version" "$mono") || exit 1
+  echo "Running $display_label"
+  "$editor_path" &
 }
 ```
 
-### 4. Update Help Text
+---
 
-Change from:
-```
--m, --mono    Download mono build (only with install)
-```
+## Pattern E: Zip Name Construction
 
-To:
-```
--m, --mono    Use mono build (with install, run, or delete)
-```
+**Status:** COMPLETE
 
-Add examples:
-```
-  gim run 4.2 -m                   Run mono build of 4.2
-  gim delete 4.2 -m                Delete mono build of 4.2
-```
+**Location:** `install_editor` (lines 500-512)
 
-### 5. Fix `list -o` Duplicate Versions
-
-**Status: In Progress**
-
-#### Motivation
-
-`gim list -o` shows both `4.7-stable` and `4.7.2-stable` because version parsing fails for tags without a patch version. For `4.7-stable`, `${remainder%%.*}` on `7-stable` returns `7-stable` (no `.` to match), producing key `4.7-stable` instead of `4.7`.
-
-#### Changes
-
-**a. Add `parse_version_key()` after `is_version_installed()`:**
+**Problem:** Two separate if blocks handle the mono flag — one sets `$asset_suffix`,
+the other constructs `$zip_name` with a slightly different pattern. Both are driven
+by the same `$mono` flag.
 
 ```bash
-parse_version_key() {
-  local tag="$1"
-  local version="${tag%%-*}"
-  local major="${version%%.*}"
-  local remainder="${version#*.}"
-  local minor="${remainder%%.*}"
-  _pv_version="$version"
-  _pv_key="${major}.${minor}"
-}
+local asset_suffix=""
+if [ "$mono" = "on" ]; then
+  asset_suffix="_mono"
+fi
+
+if [ "$mono" = "on" ]; then
+  zip_name="Godot_v${tag}${asset_suffix}_${platform}_${architecture}.zip"
+else
+  zip_name="Godot_v${tag}${asset_suffix}_${platform}.${architecture}.zip"
+fi
 ```
 
-Sets globals: `_pv_key` (e.g., `4.7`) and `_pv_version` (e.g., `4.7.2`).
-
-**b. Update `list_installed_editors()` (lines 248-255):**
-
-Replace:
-```bash
-local major="${tag%%.*}"
-local remainder="${tag#*.}"
-local minor="${remainder%%.*}"
-local key="${major}.${minor}"
-```
-
-With:
-```bash
-parse_version_key "$tag"
-local key="$_pv_key"
-```
-
-**c. Update `resolve_version()` (lines 350-352):**
-
-Replace:
-```bash
-local major="${tag%%.*}"
-local remainder="${tag#*.}"
-local minor="${remainder%%.*}"
-```
-
-With:
-```bash
-parse_version_key "$tag"
-```
-
-Use `$_pv_key` where `key` was used (line 359).
-
-**d. Add `version_gt()` after `parse_version_key()`:**
-
-Lexicographic comparison `[[ "$tag" > "${latest_stable[$key]}" ]]` is locale-dependent and fails for semantic versions (e.g., `4.7-stable` vs `4.7.2-stable`). Add numeric comparison:
+**Suggestion:** Merge into a single conditional — `$asset_suffix` is only used
+here, so inline it:
 
 ```bash
-# Compare two version strings numerically (greater than).
-# Strips suffixes (e.g., -stable, -rc1) and compares major.minor.patch.
-version_gt() {
-  local v1="${1%%-*}" v2="${2%%-*}"
-  IFS='.' read -r major1 minor1 patch1 <<< "$v1"
-  IFS='.' read -r major2 minor2 patch2 <<< "$v2"
-  [ "${major1:-0}" -gt "${major2:-0}" ] ||
-  { [ "${major1:-0}" -eq "${major2:-0}" ] && [ "${minor1:-0}" -gt "${minor2:-0}" ]; } ||
-  { [ "${major1:-0}" -eq "${major2:-0}" ] && [ "${minor1:-0}" -eq "${minor2:-0}" ] && [ "${patch1:-0}" -gt "${patch2:-0}" ]; }
-}
+local zip_name
+if [ "$mono" = "on" ]; then
+  zip_name="Godot_v${tag}_mono_${platform}_${architecture}.zip"
+else
+  zip_name="Godot_v${tag}_${platform}.${architecture}.zip"
+fi
 ```
 
-**e. Update `list_installed_editors()` comparison (line 264):**
+---
 
-Replace:
-```bash
-if [ -z "${latest_stable[$key]}" ] || [[ "$tag" > "${latest_stable[$key]}" ]]; then
-```
+## Summary
 
-With:
-```bash
-if [ -z "${latest_stable[$key]}" ] || version_gt "$tag" "${latest_stable[$key]}"; then
-```
+| Pattern | Occurrences | Type | Savings |
+|---------|-------------|------|---------|
+| A: `build_editor_pattern` | 2 | Identical | Extract 1 helper |
+| B: `resolve_editor_with_fallback` | 3 | Near-identical | Extract 1 helper, simplify 3 call sites |
+| C: `http_fetch` | 2 | Similar (curl/wget) | Extract 1 helper |
+| D: `run_editor` branches | 2 | Inner fallback identical | Restructure to single fallback path |
+| E: Zip name construction | 2 | Same flag, split blocks | Merge into one conditional |
 
-**f. Update `resolve_version()` comparison (line 368):**
-
-Same replacement as above.
-
-## Files Affected
-
-| File | Action |
-|------|--------|
-| `gim.sh` | Update `find_editor_by_version()` with mono parameter |
-| `gim.sh` | Update `run_editor()` with fallback logic |
-| `gim.sh` | Update `delete_editor()` with fallback logic |
-| `gim.sh` | Update help text and examples |
-| `gim.sh` | Add `parse_version_key()` function |
-| `gim.sh` | Add `version_gt()` function |
-| `gim.sh` | Update `list_installed_editors()` to use `parse_version_key` and `version_gt` |
-| `gim.sh` | Update `resolve_version()` to use `parse_version_key` and `version_gt` |
-
-## Fallback Behavior
-
-| Command | Scenario | Behavior |
-|---------|----------|----------|
-| `gim run 4.7` | Only non-mono installed | Runs non-mono |
-| `gim run 4.7` | Only mono installed | Runs mono |
-| `gim run 4.7 -m` | Only non-mono installed | Prints "Mono build not found…", runs non-mono |
-| `gim run 4.7 -m` | Only mono installed | Runs mono |
-| `gim run 4.7` | Both installed | Runs non-mono |
-| `gim run 4.7 -m` | Both installed | Runs mono |
-| `gim delete 4.7` | Only non-mono installed | Deletes non-mono |
-| `gim delete 4.7` | Only mono installed | Deletes mono |
-| `gim delete 4.7 -m` | Only non-mono installed | Prints "Mono build not found…", deletes non-mono |
-| `gim delete 4.7 -m` | Only mono installed | Deletes mono |
-| `gim delete 4.7` | Both installed | Deletes non-mono |
-| `gim delete 4.7 -m` | Both installed | Deletes mono |
-
-## Verification
-
-- `gim run 4.7 -m` → runs mono build
-- `gim run 4.7` → runs non-mono build (or fallback to mono)
-- `gim delete 4.7 -m` → deletes mono build
-- `gim delete 4.7` → deletes non-mono build (or fallback to mono)
-- `bash -n gim.sh` → syntax check passes
+**Net effect:** ~50 lines of duplicated branching reduced to ~20 lines across
+3-4 small helpers. The highest-impact changes are Pattern B (most duplication)
+and Pattern A (exact duplicates).
