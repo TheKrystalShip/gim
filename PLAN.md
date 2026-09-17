@@ -1,224 +1,78 @@
-# Refactor Plan: Simplify Near-Identical Branching in gim.sh
+# Plan: Use dedicated folders for all editor installs
 
-## Status: COMPLETE
+## Context
 
-All five patterns have been implemented and verified (syntax check passes).
+The previous fix flattened mono builds into single files. The user now wants **all** builds (mono and non-mono) installed into dedicated subdirectories under `editors_dir`. This is needed because mono builds include `GodotSharp/` which must live alongside the executable.
 
----
+### Zip structure (verified)
+- **Non-mono**: extracts to a single file `Godot_v4.7.2-stable_linux.x86_64`
+- **Mono**: extracts to a directory `Godot_v4.7.2-stable_mono_linux_x86_64/` containing the executable + `GodotSharp/`
 
-## Overview
-
-`gim.sh` contains multiple if-statements where both branches perform nearly identical
-logic, differing only in a variable name, a string literal, or a fallback target.
-These duplications hurt maintainability and increase the risk of inconsistency when
-one branch is updated but the other is not.
-
----
-
-## Pattern A: Mono/Linux File Pattern
-
-**Status:** COMPLETE
-
-**Locations:** `find_editor_by_version` (lines 177-182), `is_version_installed` (lines 206-211)
-
-**Problem:** Both build an identical glob pattern from `$mono` — copy-pasted.
-
-```bash
-if [ "$mono" = "on" ]; then
-  pattern="${pattern}*_mono*"
-else
-  pattern="${pattern}*_linux*"
-fi
+### Target layout
+```
+editors_dir/
+  Godot_v4.7.2-stable_linux.x86_64/
+    Godot_v4.7.2-stable_linux.x86_64        (executable)
+  Godot_v4.7.2-stable_mono_linux_x86_64/
+    Godot_v4.7.2-stable_mono_linux.x86_64   (executable)
+    GodotSharp/                             (mono runtime)
 ```
 
-**Suggestion:** Extract to a helper:
+## Changes
 
-```bash
-build_editor_pattern() {
-  local version="$1" mono="$2"
-  local pattern="${editor_file_name_start}_v${version}"
-  if [ "$mono" = "on" ]; then
-    echo "${pattern}*_mono*"
-  else
-    echo "${pattern}*_linux*"
-  fi
-}
-```
+### 1. New helper: `find_editor_executable_in_dir` (after `build_editor_pattern`)
 
-Both call sites replace ~5 lines with a single function call.
+Finds the Godot executable inside an editor directory.
 
----
+### 2. `find_installed_editors` — change `find -type f` to `find -type d`
 
-## Pattern B: Fallback Build Resolution
+Discover editor directories, then find the executable inside each.
 
-**Status:** COMPLETE
+### 3. `find_editor_by_version` — change `find -type f` to `find -type d`
 
-**Locations:** `run_editor` (lines 414-423), `run_editor` (lines 427-434), `delete_editor` (lines 446-459)
+Match editor directories by pattern, return the directory path.
 
-**Problem:** Three blocks follow the same pattern — try one build type, fall back to
-the other on failure. They differ only in the version variable and error handling.
+### 4. `is_version_installed` — change `find -type f` to `find -type d`
 
-| Block | Version var | Error behavior |
-|-------|-------------|----------------|
-| `run_editor` (no version) | `$latest_version` | `exit 1` |
-| `run_editor` (with version) | `$search_version` | `exit 1` |
-| `delete_editor` | `$search_version` | nested `echo` + `exit 1` |
+Check for directory existence instead of file.
 
-**Suggestion:** Extract to a helper:
+### 5. `run_editor` — find executable inside the directory
 
-```bash
-resolve_editor_with_fallback() {
-  local version="$1" mono="$2"
-  local editor_path
-  editor_path=$(find_editor_by_version "$version" "$mono" 2>/dev/null) && {
-    echo "$editor_path"
-    return 0
-  }
-  if [ "$mono" = "on" ]; then
-    echo "Mono build not found for $version, using standard build." >&2
-    editor_path=$(find_editor_by_version "$version" "off") || return 1
-  else
-    echo "Standard build not found for $version, using mono build." >&2
-    editor_path=$(find_editor_by_version "$version" "on") || return 1
-  fi
-  echo "$editor_path"
-}
-```
+After resolving the directory, use `find_editor_executable_in_dir` to get the binary.
 
-`delete_editor`'s extra nested error message is redundant since `find_editor_by_version`
-already prints the same error. The helper's `return 1` is sufficient for callers to
-handle with their own `exit 1`.
+### 6. `delete_editor` — use `rm -rf` on the directory
 
----
+Remove the entire editor directory, not just a single file.
 
-## Pattern C: Curl vs Wget Abstraction
+### 7. `install_editor` — rewrite post-extraction logic
 
-**Status:** COMPLETE
+- For mono: move the extracted directory as-is
+- For non-mono: wrap the extracted file in a dedicated directory
+- Remove the flattening logic
 
-**Locations:** `fetch_releases` (lines 327-331), `install_editor` (lines 519-523)
+### 8. Fix output routing violations (stdout/stderr convention)
 
-**Problem:** Both branch on `command -v curl` to choose between curl and wget.
+Per CLAUDE.md: primary output → stdout, log/progress/errors → stderr.
 
-**Suggestion:** Extract a generic download helper:
+| Line | Current | Fix |
+|------|---------|-----|
+| 283 | `echo "  ${latest_stable[$key]}" >&2` | Remove `>&2` (version data → stdout) |
+| 293 | `echo "No Godot editors found..."` | Add `>&2` (log message → stderr) |
+| 294 | `echo "Place Godot editors inside..."` | Add `>&2` (log message → stderr) |
+| 444 | `echo "Running $display_label"` | Add `>&2` (log message → stderr) |
+| 455 | `echo "Found editor: $editor_path"` | Add `>&2` (log message → stderr) |
+| 460 | `echo "Deleted $editor_path"` | Add `>&2` (log message → stderr) |
+| 463 | `echo "Aborted."` | Add `>&2` (log message → stderr) |
+| 489 | `echo "Godot $tag is already installed."` | Add `>&2` (log message → stderr) |
+| 505 | `echo "Downloading $download_url..."` | Add `>&2` (progress → stderr) |
+| 513 | `echo "Extracting \"$zip_name\""` | Add `>&2` (progress → stderr) |
+| 544 | `echo "Installed Godot $tag to $editors_dir"` | Add `>&2` (log message → stderr) |
 
-```bash
-http_fetch() {
-  local output="$1" url="$2"
-  if command -v curl &> /dev/null; then
-    curl -fSL -o "$output" "$url"
-  elif command -v wget &> /dev/null; then
-    wget -q -O "$output" "$url"
-  else
-    return 1
-  fi
-}
-```
+## Verification
 
-`fetch_releases` needs the HTTP status code, so it would use a variant or keep a
-thin wrapper. The `install_editor` download + error block (lines 519-523) collapses
-to:
-
-```bash
-http_fetch "$tmp_dir/$zip_name" "$download_url" || {
-  echo "Download failed." >&2
-  rm -rf "$tmp_dir"
-  exit 1
-}
-```
-
----
-
-## Pattern D: `run_editor` Outer Branch Duplication
-
-**Status:** COMPLETE
-
-**Location:** `run_editor` (lines 403-438)
-
-**Problem:** The two branches of the outer if/else differ only in:
-1. How the version is resolved (`installed_editors[-1]` vs `$search_version`)
-2. The log message (`"Running latest editor"` vs `"Running editor"`)
-
-The inner fallback logic (lines 415-423 vs 427-434) is completely identical
-except for the variable name.
-
-**Suggestion:** Restructure to resolve the version first, then use a single
-fallback path:
-
-```bash
-run_editor() {
-  local search_version="$_arg_run"
-  local mono="$_arg_mono"
-  local version display_label
-
-  if [ -z "$search_version" ]; then
-    find_installed_editors
-    [ ${#installed_editors[@]} -eq 0 ] && {
-      echo "No Godot editors found in $editors_dir" >&2
-      exit 1
-    }
-    version="${installed_editors[-1]}"
-    display_label="latest editor: $version"
-  else
-    version="$search_version"
-    display_label="editor"
-  fi
-
-  local editor_path
-  editor_path=$(resolve_editor_with_fallback "$version" "$mono") || exit 1
-  echo "Running $display_label"
-  "$editor_path" &
-}
-```
-
----
-
-## Pattern E: Zip Name Construction
-
-**Status:** COMPLETE
-
-**Location:** `install_editor` (lines 500-512)
-
-**Problem:** Two separate if blocks handle the mono flag — one sets `$asset_suffix`,
-the other constructs `$zip_name` with a slightly different pattern. Both are driven
-by the same `$mono` flag.
-
-```bash
-local asset_suffix=""
-if [ "$mono" = "on" ]; then
-  asset_suffix="_mono"
-fi
-
-if [ "$mono" = "on" ]; then
-  zip_name="Godot_v${tag}${asset_suffix}_${platform}_${architecture}.zip"
-else
-  zip_name="Godot_v${tag}${asset_suffix}_${platform}.${architecture}.zip"
-fi
-```
-
-**Suggestion:** Merge into a single conditional — `$asset_suffix` is only used
-here, so inline it:
-
-```bash
-local zip_name
-if [ "$mono" = "on" ]; then
-  zip_name="Godot_v${tag}_mono_${platform}_${architecture}.zip"
-else
-  zip_name="Godot_v${tag}_${platform}.${architecture}.zip"
-fi
-```
-
----
-
-## Summary
-
-| Pattern | Occurrences | Type | Savings |
-|---------|-------------|------|---------|
-| A: `build_editor_pattern` | 2 | Identical | Extract 1 helper |
-| B: `resolve_editor_with_fallback` | 3 | Near-identical | Extract 1 helper, simplify 3 call sites |
-| C: `http_fetch` | 2 | Similar (curl/wget) | Extract 1 helper |
-| D: `run_editor` branches | 2 | Inner fallback identical | Restructure to single fallback path |
-| E: Zip name construction | 2 | Same flag, split blocks | Merge into one conditional |
-
-**Net effect:** ~50 lines of duplicated branching reduced to ~20 lines across
-3-4 small helpers. The highest-impact changes are Pattern B (most duplication)
-and Pattern A (exact duplicates).
+1. `rm -rf ~/.local/share/gim/editors/Godot_v4.7.2*`
+2. `./gim.sh install -m 4.7` — mono directory with executable + GodotSharp; progress messages on stderr
+3. `./gim.sh install 4.7` — standard directory with executable; progress messages on stderr
+4. `./gim.sh list` — both versions appear on stdout; no log noise on stdout
+5. `./gim.sh run 4.7 -m` — launches mono editor; "Running ..." on stderr
+6. `./gim.sh list -o | head` — version strings only on stdout, "Online versions:" header on stderr

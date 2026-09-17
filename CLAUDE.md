@@ -25,6 +25,14 @@ GIM (Godot Install Manager) is a bash script that manages and launches multiple 
 
 - Follow existing code style (2-space indent, LF line endings per .editorconfig)
 - XDG Base Directory spec compliance for all paths
+- **Output routing:** Primary output (version lists, resolved paths, machine-readable data) goes to **stdout**. Log/progress messages and errors go to **stderr**. This ensures `gim list | some-command` only receives data, while informational messages remain visible to the user.
+
+  | Destination | Use for | Examples |
+  |-------------|---------|----------|
+  | **stdout** | Primary output, data for piping | version strings from `list`, resolved editor paths |
+  | **stderr** | Logs, progress, errors | `"Downloading..."`, `"Installed Godot..."`, `"Error: ..."` |
+
+- **Version sorting:** When listing versions for user selection, always display in descending order (latest first) using `sort -Vr`. This applies to numbered selection lists in `delete`, version output from `list`, and any similar user-facing lists.
 
 ## Helper Functions
 
@@ -32,17 +40,20 @@ These are internal functions used by the action functions. They live in the `# -
 
 | Function | Signature | Purpose | Called by |
 |----------|-----------|---------|-----------|
-| `build_editor_pattern` | `(version, mono)` | Builds a glob pattern for finding editor files. Returns `*_mono*` or `*_linux*` variants. | `find_editor_by_version`, `is_version_installed` |
+| `build_editor_pattern` | `(version, mono)` | Builds a glob pattern for finding editor directories. Returns `*_mono*` or `*_linux*` variants. | `find_editor_by_version`, `is_version_installed` |
+| `build_stable_map` | `(map_name)` | Populates a nameref associative array with the latest stable release tag per major.minor from `available_releases`. | `list_installed_editors`, `resolve_version` |
+| `find_editor_executable_in_dir` | `(dir)` | Finds and echoes the Godot executable inside an editor directory. Returns 1 if not found. | `find_installed_editors`, `run_editor` |
 | `find_installed_editors` | `()` | Populates the `installed_editors` array with versions found in `$editors_dir`. | `run_editor`, `list_installed_editors` |
-| `find_editor_by_version` | `(version, mono)` | Finds and echoes the full path to an editor binary matching a version. Returns 1 on miss. | `resolve_editor_with_fallback` |
-| `is_version_installed` | `(version, mono)` | Returns 0 if a matching editor file exists, 1 otherwise. | `install_editor` |
+| `find_editor_by_version` | `(version, mono)` | Finds and echoes the full path to an editor directory matching a version. Returns 1 on miss. | `resolve_editor_with_fallback` |
+| `find_editors_by_version` | `(version, mono)` | Finds all editor directories matching a version, echoing one per line. Falls back to the other build type if no matches found. | `delete_editor` |
+| `is_version_installed` | `(version, mono)` | Returns 0 if a matching editor directory exists, 1 otherwise. | `install_editor` |
 | `parse_version_key` | `(tag)` | Sets `_pv_version` and `_pv_key` (major.minor) from a tag like `4.3.2-stable`. | `list_installed_editors`, `resolve_version` |
 | `version_gt` | `(v1, v2)` | Returns 0 if v1 > v2 numerically (strips suffixes, compares major.minor.patch). | `list_installed_editors`, `resolve_version` |
 | `http_fetch` | `(output, url)` | Downloads a URL to a file using curl or wget. Returns 1 if neither available. | `install_editor` |
 | `check_online_dependencies` | `()` | Validates curl/wget and jq are installed. Exits 1 with error if not. | `list_installed_editors`, `install_editor` |
 | `fetch_releases` | `()` | Fetches GitHub API releases into `available_releases` array. Caches; no-op if already populated. | `list_installed_editors`, `install_editor` |
 | `resolve_version` | `(search_version)` | Resolves a partial version (e.g. `4.2`) to a full tag (e.g. `4.2.1-stable`). Returns 1 if no match, printing suggestions. | `install_editor` |
-| `resolve_editor_with_fallback` | `(version, mono)` | Finds an editor, falling back to the other build type if the preferred one is missing. Echoes path or returns 1. | `run_editor`, `delete_editor` |
+| `resolve_editor_with_fallback` | `(version, mono)` | Finds an editor directory, falling back to the other build type if the preferred one is missing. Echoes directory path or returns 1. | `run_editor` |
 
 ## Abstraction Principles
 

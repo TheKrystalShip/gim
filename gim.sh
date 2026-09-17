@@ -155,7 +155,11 @@ parse_args()
 
 build_editor_pattern() {
   local version="$1" mono="$2"
-  local version_num="${version%%-*}"
+  local IFS='.'
+  local major minor patch
+  read -r major minor patch _ <<< "$version"
+  patch="${patch%%-*}"
+  local version_num="${major}.${minor}${patch:+.${patch}}"
   local pattern="${editor_file_name_start}_v${version_num}"
   if [ "$mono" = "on" ]; then
     echo "${pattern}*_mono*"
@@ -164,19 +168,32 @@ build_editor_pattern() {
   fi
 }
 
+find_editor_executable_in_dir() {
+  local dir="$1"
+  local executable
+  executable=$(find "$dir" -maxdepth 1 -type f -name 'Godot_v*' -print -quit 2>/dev/null)
+  if [ -z "$executable" ]; then
+    return 1
+  fi
+  echo "$executable"
+}
+
 find_installed_editors() {
   installed_editors=()
   if [ ! -d "$editors_dir" ]; then
     return
   fi
-  while IFS= read -r file; do
-    if [ -x "$file" ]; then
-      version=$("$file" --version 2>/dev/null)
+  while IFS= read -r dir; do
+    if [ -d "$dir" ]; then
+      local executable
+      executable=$(find_editor_executable_in_dir "$dir") || continue
+      local version
+      version=$("$executable" --version 2>/dev/null)
       if [ -n "$version" ]; then
         installed_editors+=("$version")
       fi
     fi
-  done < <(find "$editors_dir" -maxdepth 1 -type f -iname "${editor_file_name_start}*" 2>/dev/null)
+  done < <(find "$editors_dir" -maxdepth 1 -type d -iname "${editor_file_name_start}*" 2>/dev/null)
 }
 
 find_editor_by_version() {
@@ -186,12 +203,12 @@ find_editor_by_version() {
   local pattern
   pattern=$(build_editor_pattern "$search_version" "$mono")
 
-  while IFS= read -r file; do
-    if [ -n "$file" ]; then
-      editor_path="$file"
+  while IFS= read -r dir; do
+    if [ -n "$dir" ]; then
+      editor_path="$dir"
       break
     fi
-  done < <(find "$editors_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
+  done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
 
   if [ -z "$editor_path" ]; then
     echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
@@ -201,18 +218,63 @@ find_editor_by_version() {
   echo "$editor_path"
 }
 
+find_editors_by_version() {
+  local search_version="$1" mono="$2"
+  local pattern
+  pattern=$(build_editor_pattern "$search_version" "$mono")
+
+  local -a results=()
+  while IFS= read -r dir; do
+    [ -n "$dir" ] && results+=("$dir")
+  done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
+
+  if [ ${#results[@]} -eq 0 ]; then
+    local fallback_mono
+    if [ "$mono" = "on" ]; then
+      echo "Mono build not found for $search_version, trying standard build." >&2
+      fallback_mono="off"
+    else
+      echo "Standard build not found for $search_version, trying mono build." >&2
+      fallback_mono="on"
+    fi
+    pattern=$(build_editor_pattern "$search_version" "$fallback_mono")
+    while IFS= read -r dir; do
+      [ -n "$dir" ] && results+=("$dir")
+    done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
+  fi
+
+  for r in "${results[@]}"; do
+    echo "$r"
+  done
+}
+
 is_version_installed() {
   local search_version="$1"
   local mono="$2"
   local pattern
   pattern=$(build_editor_pattern "$search_version" "$mono")
 
-  while IFS= read -r file; do
-    if [ -n "$file" ]; then
+  while IFS= read -r dir; do
+    if [ -n "$dir" ]; then
       return 0
     fi
-  done < <(find "$editors_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
+  done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
   return 1
+}
+
+build_stable_map() {
+  local -n _map=$1
+  for entry in "${available_releases[@]}"; do
+    local tag="${entry%%|*}"
+    local prerelease="${entry#*|}"
+    if [ "$prerelease" = "false" ]; then
+      parse_version_key "$tag"
+      local key="$_pv_key"
+      if [ -z "${_map[$key]}" ] || version_gt "$tag" "${_map[$key]}"; then
+        _map[$key]="$tag"
+      fi
+    fi
+  done
 }
 
 parse_version_key() {
@@ -241,7 +303,7 @@ list_installed_editors() {
     check_online_dependencies
     fetch_releases
 
-    echo "Online versions:"
+    echo "Online versions:" >&2
 
     if [ "$_arg_experimental" = "on" ]; then
       local experimental_tags=()
@@ -263,24 +325,14 @@ list_installed_editors() {
       done
     else
       declare -A latest_stable
-      for entry in "${available_releases[@]}"; do
-        local tag="${entry%%|*}"
-        local prerelease="${entry#*|}"
-        if [ "$prerelease" = "false" ]; then
-          parse_version_key "$tag"
-          local key="$_pv_key"
-          if [ -z "${latest_stable[$key]}" ] || version_gt "$tag" "${latest_stable[$key]}"; then
-            latest_stable[$key]="$tag"
-          fi
-        fi
-      done
+      build_stable_map latest_stable
 
       local count=0
       for key in $(for k in "${!latest_stable[@]}"; do echo "$k"; done | sort -t. -k1,1rn -k2,2rn); do
         if [ $count -ge $MAX_ONLINE_VERSIONS ]; then
           break
         fi
-    echo "  ${latest_stable[$key]}" >&2
+    echo "  ${latest_stable[$key]}"
         ((count++))
       done
     fi
@@ -290,8 +342,7 @@ list_installed_editors() {
   find_installed_editors
 
   if [ ${#installed_editors[@]} -eq 0 ]; then
-    echo "No Godot editors found in $editors_dir"
-    echo "Place Godot editors inside this folder to start using $NAME_SHORT."
+    echo "No Gdot editors installed. Install versions by running gim install <VERSION>" >&2
     exit 0
   fi
   for editor in $(printf '%s\n' "${installed_editors[@]}" | sort -Vr); do
@@ -371,19 +422,14 @@ resolve_version() {
   declare -A latest_stable
   local latest_experimental=""
 
+  build_stable_map latest_stable
+
   for entry in "${available_releases[@]}"; do
     local tag="${entry%%|*}"
     local prerelease="${entry#*|}"
-
     if [ "$prerelease" = "true" ]; then
       if [ -z "$latest_experimental" ] || [[ "$tag" > "$latest_experimental" ]]; then
         latest_experimental="$tag"
-      fi
-    else
-      parse_version_key "$tag"
-      local key="$_pv_key"
-      if [ -z "${latest_stable[$key]}" ] || version_gt "$tag" "${latest_stable[$key]}"; then
-        latest_stable[$key]="$tag"
       fi
     fi
   done
@@ -439,28 +485,73 @@ run_editor() {
     display_label="editor"
   fi
 
+  local editor_dir
+  editor_dir=$(resolve_editor_with_fallback "$version" "$mono") || exit 1
   local editor_path
-  editor_path=$(resolve_editor_with_fallback "$version" "$mono") || exit 1
-  echo "Running $display_label"
+  editor_path=$(find_editor_executable_in_dir "$editor_dir") || exit 1
+  echo "Running $display_label" >&2
   "$editor_path" &
 }
 
 delete_editor() {
   local search_version="$_arg_delete"
   local mono="$_arg_mono"
-  local editor_path
+  local editor_dir
+  local -a matches=()
 
-  editor_path=$(resolve_editor_with_fallback "$search_version" "$mono") || exit 1
+  while IFS= read -r dir; do
+    [ -n "$dir" ] && matches+=("$dir")
+  done < <(find_editors_by_version "$search_version" "$mono")
 
-  echo "Found editor: $editor_path"
+  if [ ${#matches[@]} -eq 0 ]; then
+    echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
+    exit 1
+  fi
+
+  # Sort matches in descending version order by basename
+  if [ ${#matches[@]} -gt 1 ]; then
+    local sorted_file
+    sorted_file=$(mktemp)
+    for dir in "${matches[@]}"; do
+      echo "$(basename "$dir")|$dir" >> "$sorted_file"
+    done
+    local -a sorted_matches=()
+    while IFS='|' read -r name path; do
+      sorted_matches+=("$path")
+    done < <(sort -t'|' -k1,1Vr "$sorted_file")
+    rm -f "$sorted_file"
+    matches=("${sorted_matches[@]}")
+  fi
+
+  if [ ${#matches[@]} -eq 1 ]; then
+    editor_dir="${matches[0]}"
+  else
+    echo "Multiple editors found matching version '$search_version':" >&2
+    local i=1
+    for dir in "${matches[@]}"; do
+      echo "  $i) $(basename "$dir")" >&2
+      ((i++))
+    done
+    local choice
+    while true; do
+      read -r -p "Enter number (1-${#matches[@]}): " choice
+      if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#matches[@]}" ]; then
+        editor_dir="${matches[$((choice-1))]}"
+        break
+      fi
+      echo "Invalid choice. Please enter a number between 1 and ${#matches[@]}." >&2
+    done
+  fi
+
+  echo "Found editor: $(basename "$editor_dir")" >&2
   read -r -p "Are you sure you want to delete this editor? [y/N] " response
   case "$response" in
     [yY][eE][sS]|[yY])
-      rm "$editor_path"
-      echo "Deleted $editor_path"
+      rm -rf "$editor_dir"
+      echo "Deleted $editor_dir" >&2
       ;;
     *)
-      echo "Aborted."
+      echo "Aborted." >&2
       exit 0
       ;;
   esac
@@ -486,11 +577,11 @@ install_editor() {
 
   # Check if version is already installed
   if is_version_installed "$tag" "$mono"; then
-    echo "Godot $tag is already installed."
+    echo "Godot $tag is already installed." >&2
     exit 0
   fi
 
-  # For some reason there's a zip file name difference between native and mono builds
+  # For some reason there's a zip file name difference between native and mono builds when downloading
   local zip_name
   if [ "$mono" = "on" ]; then
     zip_name="Godot_v${tag}_mono_${platform}_${architecture}.zip"
@@ -502,26 +593,51 @@ install_editor() {
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
-  echo "Downloading $download_url..."
+  echo "Downloading $download_url" >&2
   http_fetch "$tmp_dir/$zip_name" "$download_url" || {
     echo "Download failed." >&2
     rm -rf "$tmp_dir"
     exit 1
   }
 
-  echo "Extracting..."
+  echo "Extracting \"$zip_name\"" >&2
   unzip -o -q "$tmp_dir/$zip_name" -d "$tmp_dir"
 
   rm "$tmp_dir/$zip_name"
 
   mkdir -p "$editors_dir"
-  mv "$tmp_dir"/Godot_v* "$editors_dir/"
-  chmod +x "$editors_dir"/Godot_v*
 
-  tag="${tag}-mono"
+  # Remove any pre-existing files/dirs that would conflict with the extracted content
+  local extracted_items=("$tmp_dir"/Godot_v*)
+  for item in "${extracted_items[@]}"; do
+    local base
+    base=$(basename "$item")
+    rm -rf "${editors_dir:?}/${base}"
+  done
+
+  # Move extracted content to editors_dir, wrapping non-mono files in a directory
+  for item in "$tmp_dir"/Godot_v*; do
+    [ -e "$item" ] || continue
+    local base
+    base=$(basename "$item")
+    if [ -d "$item" ]; then
+      mv "$item" "$editors_dir/"
+    else
+      mkdir -p "$editors_dir/$base"
+      mv "$item" "$editors_dir/$base/"
+    fi
+  done
+
+  # Make all editor directories and their contents accessible
+  find "$editors_dir" -maxdepth 1 -type d -name 'Godot_v*' -exec chmod +x {}/Godot_v* \; 2>/dev/null
+  find "$editors_dir" -maxdepth 1 -type d -name 'Godot_v*' -exec chmod 755 {} \; 2>/dev/null
+
+  if [ "$mono" = "on" ]; then
+    tag="${tag}-mono"
+  fi
 
   rm -rf "$tmp_dir"
-  echo "Installed Godot $tag to $editors_dir"
+  echo "Installed Godot $tag to $editors_dir" >&2
 }
 
 # --- Main ---
