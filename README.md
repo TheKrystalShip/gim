@@ -22,3 +22,5 @@ GIM follows [XDG Base Directory](https://specifications.freedesktop.org/basedir-
 | Location                          | Purpose                                         |
 | --------------------------------- | ----------------------------------------------- |
 | `~/.local/share/gim/editors/`     | Your installed editor versions are stored here  |
+
+Editor versions are installed in a dedicated directory because mono versions aren't contained inside a single file.

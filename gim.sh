@@ -379,6 +379,8 @@ fetch_releases() {
     return
   fi
 
+  echo "Fetching online releases..." >&2
+
   local api_url="https://api.github.com/repos/godotengine/godot-builds/releases?per_page=100"
   local response
   local http_code
