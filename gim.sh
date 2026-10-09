@@ -155,17 +155,46 @@ parse_args()
 
 build_editor_pattern() {
   local version="$1" mono="$2"
+  # Release tags (and thus zip/dir names on disk) use a dash before
+  # prerelease parts (4.8-dev7, 4.3-stable), while `--version` output and
+  # user input use a dot (4.8.dev7). Normalise to dots, then emit a [-.]
+  # character class for non-numeric prerelease tokens so the pattern
+  # matches both spellings on disk.
+  version="${version//-/.}"
   local IFS='.'
-  local major minor patch
+  local major minor patch _
   read -r major minor patch _ <<< "$version"
-  patch="${patch%%-*}"
-  local version_num="${major}.${minor}${patch:+.${patch}}"
+  local version_num
+  if [ -z "$patch" ]; then
+    version_num="${major}.${minor}"
+  elif [[ "$patch" =~ ^[0-9]+$ ]]; then
+    version_num="${major}.${minor}.${patch}"
+  else
+    version_num="${major}.${minor}[-.]${patch}"
+  fi
   local pattern="${editor_file_name_start}_v${version_num}"
   if [ "$mono" = "on" ]; then
     echo "${pattern}*_mono*"
   else
     echo "${pattern}*_linux*"
   fi
+}
+
+# Echo installed editor directories matching the given glob pattern.
+# When mono is not "on", mono builds are excluded: the *_linux* part also
+# appears in mono directory names, so without this filter a standard search
+# could match a mono build (and vice versa is not a concern, as *_mono* is
+# specific to mono builds).
+collect_editor_dirs() {
+  local pattern="$1" mono="$2"
+  local dir
+  while IFS= read -r dir; do
+    [ -z "$dir" ] && continue
+    if [ "$mono" != "on" ] && [[ "$(basename "$dir")" == *_mono_* ]]; then
+      continue
+    fi
+    echo "$dir"
+  done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
 }
 
 find_editor_executable_in_dir() {
@@ -199,16 +228,11 @@ find_installed_editors() {
 find_editor_by_version() {
   local search_version="$1"
   local mono="$2"
-  local editor_path=""
   local pattern
   pattern=$(build_editor_pattern "$search_version" "$mono")
 
-  while IFS= read -r dir; do
-    if [ -n "$dir" ]; then
-      editor_path="$dir"
-      break
-    fi
-  done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
+  local editor_path
+  editor_path=$(collect_editor_dirs "$pattern" "$mono" | head -n 1)
 
   if [ -z "$editor_path" ]; then
     echo "Error: No editor found matching version '$search_version' in $editors_dir" >&2
@@ -226,7 +250,7 @@ find_editors_by_version() {
   local -a results=()
   while IFS= read -r dir; do
     [ -n "$dir" ] && results+=("$dir")
-  done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
+  done < <(collect_editor_dirs "$pattern" "$mono")
 
   if [ ${#results[@]} -eq 0 ]; then
     local fallback_mono
@@ -240,7 +264,7 @@ find_editors_by_version() {
     pattern=$(build_editor_pattern "$search_version" "$fallback_mono")
     while IFS= read -r dir; do
       [ -n "$dir" ] && results+=("$dir")
-    done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
+    done < <(collect_editor_dirs "$pattern" "$fallback_mono")
   fi
 
   for r in "${results[@]}"; do
@@ -254,12 +278,9 @@ is_version_installed() {
   local pattern
   pattern=$(build_editor_pattern "$search_version" "$mono")
 
-  while IFS= read -r dir; do
-    if [ -n "$dir" ]; then
-      return 0
-    fi
-  done < <(find "$editors_dir" -maxdepth 1 -type d -name "$pattern" 2>/dev/null)
-  return 1
+  local match
+  match=$(collect_editor_dirs "$pattern" "$mono" | head -n 1)
+  [ -n "$match" ]
 }
 
 build_stable_map() {
@@ -480,8 +501,18 @@ run_editor() {
       echo "No Godot editors found in $editors_dir" >&2
       exit 1
     fi
-    version="${installed_editors[-1]}"
+    # Latest first regardless of build type: if the newest build is a mono
+    # build it must still be the one that runs. For equal versions, sort -Vr
+    # orders the standard build ahead of the mono build, so plain `gim run`
+    # picks the standard build and mono must be requested explicitly.
+    mapfile -t installed_editors < <(printf '%s\n' "${installed_editors[@]}" | sort -Vr)
+    version="${installed_editors[0]}"
     display_label="latest editor: $version"
+    # The version string itself identifies the build type (".mono." for mono
+    # builds), so honour it when -m was not passed.
+    if [ "$mono" = "off" ] && [[ "$version" == *.mono.* ]]; then
+      mono="on"
+    fi
   else
     version="$search_version"
     display_label="editor"

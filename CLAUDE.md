@@ -40,7 +40,8 @@ These are internal functions used by the action functions. They live in the `# -
 
 | Function | Signature | Purpose | Called by |
 |----------|-----------|---------|-----------|
-| `build_editor_pattern` | `(version, mono)` | Builds a glob pattern for finding editor directories. Returns `*_mono*` or `*_linux*` variants. | `find_editor_by_version`, `is_version_installed` |
+| `build_editor_pattern` | `(version, mono)` | Builds a glob pattern for finding editor directories. Normalises dash-form input (release tags like `4.8-dev7`) to dots and emits a `[-.]` character class for non-numeric prerelease tokens, matching both on-disk spellings (`-dev7` from tags, `.dev7` from `--version` output). Returns `*_mono*` or `*_linux*` variants. | `find_editor_by_version`, `find_editors_by_version`, `is_version_installed` |
+| `collect_editor_dirs` | `(pattern, mono)` | Finds installed editor directories matching a glob pattern, echoing one per line. Excludes mono builds unless mono is "on" (the `*_linux*` part also appears in mono dir names, so an unfiltered standard search could match a mono build). | `find_editor_by_version`, `find_editors_by_version`, `is_version_installed` |
 | `build_stable_map` | `(map_name)` | Populates a nameref associative array with the latest stable release tag per major.minor from `available_releases`. | `list_installed_editors`, `resolve_version` |
 | `find_editor_executable_in_dir` | `(dir)` | Finds and echoes the Godot executable inside an editor directory. Returns 1 if not found. | `find_installed_editors`, `run_editor` |
 | `find_installed_editors` | `()` | Populates the `installed_editors` array with versions found in `$editors_dir`. | `run_editor`, `list_installed_editors` |
