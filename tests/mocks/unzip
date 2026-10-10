@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Mock unzip for GIM tests.
+#
+# gim.sh runs:  unzip -o -q "$tmp_dir/$zip_name" -d "$tmp_dir"
+#
+# Real Godot zips extract to:
+#   standard: a FILE  Godot_v<ver>_linux.x86_64
+#   mono:     a DIR   Godot_v<ver>_mono_linux_x86_64/ containing the binary
+# This shim reproduces that shape from the zip filename, writing a fake editor
+# binary whose --version prints the correct string.
+
+zipfile=""
+destdir="."
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    -d) i=$((i + 1)); destdir="${args[$i]:-}" ;;
+    -*) ;;
+    *)  zipfile="$a" ;;
+  esac
+  i=$((i + 1))
+done
+
+if [ -n "${MOCK_UNZIP_COUNT_FILE:-}" ]; then
+  printf '%s\n' "$zipfile" >> "$MOCK_UNZIP_COUNT_FILE"
+fi
+
+if [ "${MOCK_UNZIP_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+
+base="$(basename "$zipfile" .zip)"
+mkdir -p "$destdir" || exit 1
+
+emit_binary() { # <path> <version-string>
+  cat > "$1" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+  echo "$2"
+  exit 0
+fi
+if [ -n "\${GIM_EDITOR_RUN_LOG:-}" ]; then
+  printf '%s %s\n' "\$0" "\$*" >> "\$GIM_EDITOR_RUN_LOG"
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+case "$base" in
+  *_mono_*)
+    # mono: directory containing the binary
+    ver="${base#Godot_v}"
+    ver="${ver%_mono_linux_x86_64}"
+    vstr="${ver//-/.}.mono.official.mock"
+    dir="$destdir/$base"
+    mkdir -p "$dir"
+    emit_binary "$dir/Godot_v${ver}_mono_linux.x86_64" "$vstr"
+    ;;
+  *)
+    ver="${base#Godot_v}"
+    ver="${ver%_linux.x86_64}"
+    vstr="${ver//-/.}.official.mock"
+    emit_binary "$destdir/$base" "$vstr"
+    ;;
+esac
+exit 0

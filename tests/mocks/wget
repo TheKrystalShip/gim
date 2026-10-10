@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Mock wget for GIM tests.
+#
+# Handles the two call shapes gim.sh makes:
+#   API:    wget -q -O <file> <api-url>     -> body, exit 0/1 (gim maps to 200/000)
+#   GET:    wget -q -O <out> <download-url> -> body, exit 0/1
+#
+# Controlled by MOCK_* env vars (see framework/mocks.sh).
+
+outfile=""
+url=""
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    -O) i=$((i + 1)); outfile="${args[$i]:-}" ;;
+    -*) ;;
+    *)  url="$a" ;;
+  esac
+  i=$((i + 1))
+done
+
+if [ -n "${MOCK_CURL_COUNT_FILE:-}" ]; then
+  printf '%s\n' "$url" >> "$MOCK_CURL_COUNT_FILE"
+fi
+
+is_api=0
+case "$url" in
+  *api.github.com*) is_api=1 ;;
+esac
+
+if [ "$is_api" = "1" ]; then
+  code="${MOCK_HTTP_CODE:-200}"
+else
+  code="${MOCK_DOWNLOAD_CODE:-200}"
+fi
+
+[ "$code" = "200" ] || exit 1
+
+body=""
+if [ "$is_api" = "1" ]; then body="${MOCK_HTTP_BODY:-}"; fi
+
+if [ -n "$body" ] && [ -f "$body" ]; then
+  cp "$body" "$outfile"
+else
+  : > "$outfile"
+fi
+exit 0

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Mock curl for GIM tests.
+#
+# Handles the two call shapes gim.sh makes:
+#   API:    curl -s -w "%{http_code}" -o <file> <api-url>   -> body + prints code, exit 0
+#   GET:    curl -fSL -o <out> <download-url>               -> body, exit 0 (or 22 on failure)
+#
+# Controlled by MOCK_* env vars (see framework/mocks.sh).
+
+outfile=""
+url=""
+write_out=""
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    -o)        i=$((i + 1)); outfile="${args[$i]:-}" ;;
+    -w)        i=$((i + 1)); write_out="${args[$i]:-}" ;;
+    -*) ;;                                  # -s, -fSL, -S, -L, etc: ignored
+    *)         url="$a" ;;
+  esac
+  i=$((i + 1))
+done
+
+# Record the call for counting.
+if [ -n "${MOCK_CURL_COUNT_FILE:-}" ]; then
+  printf '%s\n' "$url" >> "$MOCK_CURL_COUNT_FILE"
+fi
+
+is_api=0
+case "$url" in
+  *api.github.com*) is_api=1 ;;
+esac
+
+# --- Decide which code to report -------------------------------------------
+if [ "$is_api" = "1" ]; then
+  code="${MOCK_HTTP_CODE:-200}"
+else
+  code="${MOCK_DOWNLOAD_CODE:-200}"
+fi
+
+# --- Pick the body (API only; downloads use a stub) -------------------------
+body=""
+if [ "$is_api" = "1" ]; then
+  if [ -n "${MOCK_CURL_SEQUENCE:-}" ] && [ -f "${MOCK_CURL_SEQUENCE}" ]; then
+    idx=0
+    [ -f "${MOCK_CURL_SEQUENCE}.idx" ] && idx=$(cat "${MOCK_CURL_SEQUENCE}.idx" 2>/dev/null || echo 0)
+    line=$(sed -n "$((idx + 1))p" "$MOCK_CURL_SEQUENCE" 2>/dev/null)
+    if [ -n "$line" ]; then
+      body="$line"
+      printf '%s\n' "$((idx + 1))" > "${MOCK_CURL_SEQUENCE}.idx"
+    fi
+  fi
+  [ -z "$body" ] && body="${MOCK_HTTP_BODY:-}"
+fi
+
+# --- Emulate behaviour -----------------------------------------------------
+if [ -n "$write_out" ]; then
+  # API path: gim.sh reads the code from -w output; curl must exit 0 regardless.
+  if [ "$code" = "200" ] && [ -n "$body" ] && [ -f "$body" ]; then
+    [ -n "$outfile" ] && cp "$body" "$outfile"
+  else
+    [ -n "$outfile" ] && : > "$outfile"
+  fi
+  printf '%s' "$code"
+  exit 0
+else
+  # Download path: -f semantics — non-2xx is a hard failure (exit 22).
+  if [ "$code" = "200" ]; then
+    if [ -n "${MOCK_DOWNLOAD_BODY:-}" ] && [ -f "${MOCK_DOWNLOAD_BODY:-}" ]; then
+      cp "$MOCK_DOWNLOAD_BODY" "$outfile"
+    else
+      printf 'PK\003\004mock-zip' > "$outfile"
+    fi
+    exit 0
+  else
+    exit 22
+  fi
+fi

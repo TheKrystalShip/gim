@@ -7,6 +7,8 @@ GIM (Godot Install Manager) is a bash script that manages and launches multiple 
 ## Key Files
 
 - `gim.sh` — Main script (single file to edit)
+- `tests/` — Bash/TAP test suite (`./tests/run.sh` to run; see `tests/README.md`)
+- `.github/workflows/ci.yml` — CI: ShellCheck on `gim.sh` + `./tests/run.sh`
 
 ## Dependencies
 
@@ -34,6 +36,15 @@ GIM (Godot Install Manager) is a bash script that manages and launches multiple 
   | **stderr** | Logs, progress, errors | `"Downloading..."`, `"Installed Godot..."`, `"Error: ..."` |
 
 - **Version sorting:** When listing versions for user selection, always display in descending order (latest first) using `sort -Vr`. This applies to numbered selection lists in `delete`, version output from `list`, and any similar user-facing lists.
+
+## Testing
+
+Run `./tests/run.sh` (see `tests/README.md` for filters). The suite is mocked-only — no network, no real Godot binaries. Key points when editing `gim.sh`:
+
+- Every action must exit non-zero on failure and route data to stdout / logs to stderr (see Output routing above) — assertions encode this.
+- Test files only **define** functions (they are sourced). Wrap any helper that calls `exit` behind `run_gim_eval`, which runs it in a subshell.
+- `run_gim` / `run_gim_stdin` / `run_gim_eval` populate `GIM_STDOUT` / `GIM_STDERR` / `GIM_RC` — **do not** wrap them in `$( )`, or you'll lose the globals.
+- CI runs ShellCheck on `gim.sh` plus the suite; keep both green.
 
 ## Helper Functions
 

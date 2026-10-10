@@ -1,0 +1,14 @@
+[
+  { "tag_name": "4.3.0-stable",  "prerelease": false },
+  { "tag_name": "4.2.2-stable",  "prerelease": false },
+  { "tag_name": "4.2.1-stable",  "prerelease": false },
+  { "tag_name": "4.2-stable",    "prerelease": false },
+  { "tag_name": "4.1.4-stable",  "prerelease": false },
+  { "tag_name": "4.0.4-stable",  "prerelease": false },
+  { "tag_name": "3.6-stable",    "prerelease": false },
+  { "tag_name": "3.5.3-stable",  "prerelease": false },
+  { "tag_name": "4.4-dev7",      "prerelease": true },
+  { "tag_name": "4.4-dev6",      "prerelease": true },
+  { "tag_name": "4.3-rc1",       "prerelease": true },
+  { "tag_name": "4.2-rc3",       "prerelease": true }
+]

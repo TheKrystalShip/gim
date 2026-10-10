@@ -1,0 +1,20 @@
+# ShellCheck configuration for GIM.
+# Applied to gim.sh in CI (`shellcheck gim.sh`); tests/ is validated by running
+# it and is excluded from the lint step. Only rules that actually fire on
+# gim.sh are disabled, each with a justification.
+
+# SC2004: $/${} is unnecessary on arithmetic variables. In build_stable_map the
+# subscript is an associative-array STRING key (e.g. "4.2"), not an arithmetic
+# variable — dropping the `$` would change the meaning, so keep it.
+disable=SC2004
+
+# SC2014: glob expands once before find runs. The `find -exec chmod
+# ... {}/Godot_v*` line relies on the shell NOT matching the literal `{}/...`
+# pattern (so find receives it intact and find substitutes `{}` per result) —
+# this is intentional and works; the info is a false positive here.
+disable=SC2014
+
+# SC2034: Variable appears unused. Globals like APP_CONFIG_DIR and NAME_LONG
+# are part of gim.sh's public surface and are consumed by other code paths and
+# by tests that `source gim.sh`.
+disable=SC2034

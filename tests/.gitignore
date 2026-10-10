@@ -1,0 +1,3 @@
+# Test runner artefacts
+logs/
+*.tap
