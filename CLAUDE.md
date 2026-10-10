@@ -20,6 +20,7 @@ GIM (Godot Install Manager) is a bash script that manages and launches multiple 
 |------|---------|
 | `~/.config/gim/` | Config directory (XDG_CONFIG_HOME) |
 | `~/.local/share/gim/editors/` | Installed Godot editor binaries (XDG_DATA_HOME) |
+| `~/.cache/gim/releases.json` | Persistent GitHub release cache (XDG_CACHE_HOME), TTL `GIM_RELEASES_TTL` (default 3600s) |
 
 ## Conventions
 
@@ -52,8 +53,14 @@ These are internal functions used by the action functions. They live in the `# -
 | `version_gt` | `(v1, v2)` | Returns 0 if v1 > v2 numerically (strips suffixes, compares major.minor.patch). | `list_installed_editors`, `resolve_version` |
 | `http_fetch` | `(output, url)` | Downloads a URL to a file using curl or wget. Returns 1 if neither available. | `install_editor` |
 | `check_online_dependencies` | `()` | Validates curl/wget and jq are installed. Exits 1 with error if not. | `list_installed_editors`, `install_editor` |
-| `fetch_releases` | `()` | Fetches GitHub API releases into `available_releases` array. Caches; no-op if already populated. | `list_installed_editors`, `install_editor` |
-| `resolve_version` | `(search_version)` | Resolves a partial version (e.g. `4.2`) to a full tag (e.g. `4.2.1-stable`). Returns 1 if no match, printing suggestions. | `install_editor` |
+| `fetch_releases` | `()` | Populates `available_releases`. Order: fresh disk cache (no network) → GitHub API. On API failure, falls back to a stale cache with a warning, else exits 1. Publishes the result to `$XDG_CACHE_HOME/gim/releases.json`. | `list_installed_editors`, `install_editor` |
+| `cache_is_fresh` | `()` | Returns 0 if the release cache exists, parses, and is younger than `GIM_RELEASES_TTL` (default 3600s). Strict `<` so `GIM_RELEASES_TTL=0` disables caching. | `fetch_releases` |
+| `cache_load_releases` | `()` | Fills `available_releases` from the on-disk cache and sets `releases_from_cache=true`. Returns 1 on any read/parse failure (treated as a miss, never fatal). | `fetch_releases` |
+| `cache_write_releases` | `(raw_json_file)` | Wraps raw API JSON as `{fetched_at, releases}` (validating it via `jq`) and publishes atomically with `mv` from a `mktemp` created inside the cache dir. | `fetch_releases` |
+| `cache_invalidate` | `()` | Deletes the on-disk release cache. | `resolve_version` (Option C retry) |
+| `__match_release` | `(search)` | Echoes the first release tag matching the `search` prefix; 1 on miss. | `resolve_version` |
+| `__print_version_suggestions` | `()` | Prints the miss message to stderr: newest stable per major.minor (up to `MAX_SIMILAR_VERSIONS`) plus the latest experimental. | `resolve_version` |
+| `resolve_version` | `(search_version)` | Resolves a partial version (e.g. `4.2`) to a full tag (e.g. `4.2.1-stable`). On a miss against a **cached** list, invalidates the cache, re-fetches once, and retries (Option C) before printing suggestions and returning 1. The retry clears `releases_from_cache`, so it cannot loop. | `install_editor` |
 | `resolve_editor_with_fallback` | `(version, mono)` | Finds an editor directory, falling back to the other build type if the preferred one is missing. Echoes directory path or returns 1. | `run_editor` |
 
 ## Abstraction Principles

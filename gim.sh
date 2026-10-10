@@ -19,11 +19,19 @@ MAX_ONLINE_VERSIONS=5
 # --- XDG Base Directory Setup ---
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 
 APP_CONFIG_DIR="$XDG_CONFIG_HOME/gim"
 APP_DATA_DIR="$XDG_DATA_HOME/gim"
+APP_CACHE_DIR="$XDG_CACHE_HOME/gim"
 editors_dir="$APP_DATA_DIR/editors/"
 editor_file_name_start="Godot"
+
+# --- Release cache ---
+# Persist the GitHub release list across invocations so repeated `gim list -o`
+# / `gim install` calls don't re-hit the API (unauthenticated limit: 60/hr).
+RELEASES_CACHE_FILE="$APP_CACHE_DIR/releases.json"
+GIM_RELEASES_TTL="${GIM_RELEASES_TTL:-3600}"   # seconds; overridable for tests
 
 # --- Help ---
 print_help()
@@ -357,13 +365,13 @@ list_installed_editors() {
         ((count++))
       done
     fi
-    return
+    return 0
   fi
 
   find_installed_editors
 
   if [ ${#installed_editors[@]} -eq 0 ]; then
-    echo "No Gdot editors installed. Install versions by running gim install <VERSION>" >&2
+    echo "No Godot editors installed. Install versions by running gim install <VERSION>" >&2
     exit 0
   fi
   for editor in $(printf '%s\n' "${installed_editors[@]}" | sort -Vr); do
@@ -372,6 +380,57 @@ list_installed_editors() {
 }
 
 available_releases=()
+releases_from_cache="false"   # true when the in-memory list came from disk cache
+
+# --- Release cache helpers -------------------------------------------------
+# The cache is a single JSON object {fetched_at, releases}. Keeping payload and
+# timestamp in one file makes the write atomic (one mv), and the jq wrap also
+# validates the JSON so malformed responses are never cached.
+
+# cache_is_fresh — 0 if a readable cache exists and is within GIM_RELEASES_TTL.
+cache_is_fresh() {
+  [ -f "$RELEASES_CACHE_FILE" ] || return 1
+  local fetched_at now
+  fetched_at=$(jq -r '.fetched_at // empty' "$RELEASES_CACHE_FILE" 2>/dev/null)
+  [ -n "$fetched_at" ] || return 1
+  now=$(date +%s)
+  [ $((now - fetched_at)) -lt "$GIM_RELEASES_TTL" ]
+}
+
+# cache_load_releases — populate available_releases from the on-disk cache.
+# Returns 1 on any read/parse failure (treated as a miss, never fatal).
+cache_load_releases() {
+  [ -f "$RELEASES_CACHE_FILE" ] || return 1
+  local line
+  available_releases=()
+  while IFS= read -r line; do
+    available_releases+=("$line")
+  done < <(jq -r '.releases[] | "\(.tag_name)|\(.prerelease)"' "$RELEASES_CACHE_FILE" 2>/dev/null)
+  [ ${#available_releases[@]} -gt 0 ] || return 1
+  releases_from_cache="true"
+}
+
+# cache_write_releases <raw-json-file> — wrap with fetched_at and publish
+# atomically. The mktemp MUST live in the cache dir so mv stays on one
+# filesystem (cross-device mv is not atomic).
+cache_write_releases() {
+  local raw="$1"
+  mkdir -p "$APP_CACHE_DIR" || return 1
+  chmod 700 "$APP_CACHE_DIR" || return 1
+  local tmp now
+  tmp=$(mktemp "$APP_CACHE_DIR/.releases.XXXXXX") || return 1
+  now=$(date +%s)
+  if ! jq --argjson ts "$now" '{fetched_at: $ts, releases: .}' "$raw" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$RELEASES_CACHE_FILE"
+}
+
+# cache_invalidate — drop the on-disk cache (used by the Option C retry).
+cache_invalidate() {
+  rm -f "$RELEASES_CACHE_FILE"
+}
 
 http_fetch() {
   local output="$1" url="$2"
@@ -400,46 +459,75 @@ fetch_releases() {
     return
   fi
 
+  # Fresh cache short-circuit: serve from disk, no network.
+  if cache_is_fresh && cache_load_releases; then
+    echo "Using cached releases." >&2
+    return
+  fi
+
   echo "Fetching online releases..." >&2
 
   local api_url="https://api.github.com/repos/godotengine/godot-builds/releases?per_page=100"
-  local response
   local http_code
+  local response_file
+  response_file=$(mktemp) || exit 1
 
   if command -v curl &> /dev/null; then
-    http_code=$(curl -s -w "%{http_code}" -o /tmp/gim_releases.json "$api_url")
+    http_code=$(curl -s -w "%{http_code}" -o "$response_file" "$api_url")
   else
-    http_code=$(wget -q -O /tmp/gim_releases.json "$api_url" 2>&1 && echo "200" || echo "000")
+    http_code=$(wget -q -O "$response_file" "$api_url" 2>&1 && echo "200" || echo "000")
   fi
 
-  if [ "$http_code" = "403" ]; then
-    echo "Error: GitHub API rate limit exceeded." >&2
-    echo "Set a GITHUB_TOKEN environment variable to increase the limit." >&2
-    rm -f /tmp/gim_releases.json
-    exit 1
-  elif [ "$http_code" != "200" ]; then
-    echo "Error: Failed to fetch releases from GitHub (HTTP $http_code)." >&2
-    rm -f /tmp/gim_releases.json
+  if [ "$http_code" = "403" ] || [ "$http_code" != "200" ]; then
+    # Stale-fallback: a stale version list beats a hard error. If a cache
+    # exists (even expired), load it and warn rather than failing.
+    if cache_load_releases; then
+      if [ "$http_code" = "403" ]; then
+        echo "Warning: GitHub API rate limit exceeded; using stale cached releases." >&2
+      else
+        echo "Warning: Failed to fetch releases (HTTP $http_code); using stale cached releases." >&2
+      fi
+      rm -f "$response_file"
+      return
+    fi
+    if [ "$http_code" = "403" ]; then
+      echo "Error: GitHub API rate limit exceeded." >&2
+      echo "Set a GITHUB_TOKEN environment variable to increase the limit." >&2
+    else
+      echo "Error: Failed to fetch releases from GitHub (HTTP $http_code)." >&2
+    fi
+    rm -f "$response_file"
     exit 1
   fi
 
+  available_releases=()
+  local line
   while IFS= read -r line; do
     available_releases+=("$line")
-  done < <(jq -r '.[] | "\(.tag_name)|\(.prerelease)"' /tmp/gim_releases.json 2>/dev/null)
-  rm -f /tmp/gim_releases.json
+  done < <(jq -r '.[] | "\(.tag_name)|\(.prerelease)"' "$response_file" 2>/dev/null)
+  releases_from_cache="false"
+  # Best-effort cache publish; failure here must not break the fetch.
+  cache_write_releases "$response_file" || true
+  rm -f "$response_file"
 }
 
-resolve_version() {
+# __match_release <search> — echo the first tag matching the prefix; 1 on miss.
+__match_release() {
   local search_version="$1"
-
+  local entry tag
   for entry in "${available_releases[@]}"; do
-    local tag="${entry%%|*}"
+    tag="${entry%%|*}"
     if [[ "$tag" == ${search_version}* ]]; then
       echo "$tag"
       return 0
     fi
   done
+  return 1
+}
 
+# __print_version_suggestions — stderr list of the newest stable per major.minor
+# (up to MAX_SIMILAR_VERSIONS) plus the latest experimental, for a resolve miss.
+__print_version_suggestions() {
   echo "No exact match found. Available versions:" >&2
 
   declare -A latest_stable
@@ -447,9 +535,10 @@ resolve_version() {
 
   build_stable_map latest_stable
 
+  local entry tag prerelease
   for entry in "${available_releases[@]}"; do
-    local tag="${entry%%|*}"
-    local prerelease="${entry#*|}"
+    tag="${entry%%|*}"
+    prerelease="${entry#*|}"
     if [ "$prerelease" = "true" ]; then
       if [ -z "$latest_experimental" ] || [[ "$tag" > "$latest_experimental" ]]; then
         latest_experimental="$tag"
@@ -457,7 +546,7 @@ resolve_version() {
     fi
   done
 
-  local count=0
+  local count=0 key
   for key in $(for k in "${!latest_stable[@]}"; do echo "$k"; done | sort -t. -k1,1n -k2,2n); do
     if [ $count -ge $MAX_SIMILAR_VERSIONS ]; then
       break
@@ -469,7 +558,32 @@ resolve_version() {
   if [ -n "$latest_experimental" ] && [ $count -lt $MAX_SIMILAR_VERSIONS ]; then
     echo "  $latest_experimental" >&2
   fi
+}
 
+resolve_version() {
+  local search_version="$1"
+  local tag
+
+  if tag=$(__match_release "$search_version"); then
+    echo "$tag"
+    return 0
+  fi
+
+  # Option C: a miss against a *cached* list may just be a stale snapshot (the
+  # version shipped within the last TTL). Invalidate, re-fetch once, and retry
+  # before concluding it doesn't exist. The retry sets releases_from_cache=false
+  # so this cannot loop.
+  if [ "$releases_from_cache" = "true" ]; then
+    cache_invalidate
+    available_releases=()
+    fetch_releases
+    if tag=$(__match_release "$search_version"); then
+      echo "$tag"
+      return 0
+    fi
+  fi
+
+  __print_version_suggestions
   return 1
 }
 
@@ -515,13 +629,23 @@ run_editor() {
     fi
   else
     version="$search_version"
-    display_label="editor"
+    # display_label is resolved below, once the editor is located
   fi
 
   local editor_dir
   editor_dir=$(resolve_editor_with_fallback "$version" "$mono") || exit 1
   local editor_path
   editor_path=$(find_editor_executable_in_dir "$editor_dir") || exit 1
+
+  if [ -z "$display_label" ]; then
+    # Explicit version requested: name the resolved installed build (e.g.
+    # 4.7.2.stable.official...), matching the detail plain `gim run` gives,
+    # instead of the bare word "editor" or the partial search string.
+    local resolved_version
+    resolved_version=$("$editor_path" --version 2>/dev/null)
+    display_label="editor: ${resolved_version:-$version}"
+  fi
+
   echo "Running $display_label" >&2
   "$editor_path" &
 }
@@ -634,7 +758,11 @@ install_editor() {
   }
 
   echo "Extracting \"$zip_name\"" >&2
-  unzip -o -q "$tmp_dir/$zip_name" -d "$tmp_dir"
+  if ! unzip -o -q "$tmp_dir/$zip_name" -d "$tmp_dir"; then
+    echo "Error: Failed to extract $zip_name." >&2
+    rm -rf "$tmp_dir"
+    exit 1
+  fi
 
   rm "$tmp_dir/$zip_name"
 
@@ -674,11 +802,17 @@ install_editor() {
 }
 
 # --- Main ---
-parse_args "$@"
+main() {
+  parse_args "$@"
 
-case "$_action" in
-  list) list_installed_editors ;;
-  run) run_editor ;;
-  install) install_editor ;;
-  delete) delete_editor ;;
-esac
+  case "$_action" in
+    list) list_installed_editors ;;
+    run) run_editor ;;
+    install) install_editor ;;
+    delete) delete_editor ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
