@@ -12,7 +12,7 @@ _arg_online="off"
 # --- Constants ---
 NAME_SHORT="GIM"
 NAME_LONG="Godot Installation Manager"
-VERSION="0.1.0"
+iVERSION="0.1.1"
 MAX_SIMILAR_VERSIONS=5
 MAX_ONLINE_VERSIONS=5
 
